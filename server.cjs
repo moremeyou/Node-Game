@@ -9,6 +9,31 @@ const PLAYER_UPDATE_MIN_INTERVAL_MS = 25;
 const ROOM_PRUNE_INTERVAL_MS = 250;
 const os = require('os');
 
+const DEFAULT_ROOM_WORLD = Object.freeze({
+  cols: 20,
+  rows: 12,
+  cellSize: 84,
+  minCellScreenPx: 32,
+  movementBounds: Object.freeze({
+    minCol: -100,
+    maxCol: 120,
+    minRow: -100,
+    maxRow: 112,
+  }),
+  image: Object.freeze({
+    fitMode: 'native',
+    scale: 1,
+    offsetX: 0,
+    offsetY: 0,
+    vignetteEnabled: true,
+    vignetteColor: '#000000',
+    vignetteInnerOpacity: 0,
+    vignetteEdgeOpacity: 1,
+    vignetteSize: 100,
+    vignetteCurve: 1,
+  }),
+});
+
 let nextPlayerId = 1;
 let nextRoomId = 1;
 
@@ -18,9 +43,18 @@ function createId(prefix, value) {
   return `${prefix}-${value.toString(36)}`;
 }
 
+function createRoomWorld() {
+  return {
+    ...DEFAULT_ROOM_WORLD,
+    movementBounds: { ...DEFAULT_ROOM_WORLD.movementBounds },
+    image: { ...DEFAULT_ROOM_WORLD.image },
+  };
+}
+
 function createRoom() {
   const room = {
     id: createId('room', nextRoomId++),
+    world: createRoomWorld(),
     clients: new Set(),
     players: new Map(),
     activeEdges: new Map(),
@@ -102,10 +136,19 @@ function isValidIntersection(value) {
   return !!value
     && Number.isInteger(value.col)
     && Number.isInteger(value.row)
-    && value.col >= 0
-    && value.row >= 0
+    && value.col >= -10000
+    && value.row >= -10000
     && value.col <= 10000
     && value.row <= 10000;
+}
+
+function isValidWorldIntersection(world, value) {
+  const bounds = world.movementBounds;
+  return isValidIntersection(value)
+    && value.col >= bounds.minCol
+    && value.col <= bounds.maxCol
+    && value.row >= bounds.minRow
+    && value.row <= bounds.maxRow;
 }
 
 function isValidAdjacentEdge(start, end) {
@@ -117,14 +160,22 @@ function isValidAdjacentEdge(start, end) {
   return distance === 1;
 }
 
-function sanitizeSegment(segment) {
+function isValidAdjacentWorldEdge(world, start, end) {
+  if (!isValidWorldIntersection(world, start) || !isValidWorldIntersection(world, end)) {
+    return false;
+  }
+
+  return isValidAdjacentEdge(start, end);
+}
+
+function sanitizeSegment(segment, world) {
   if (!segment) {
     return null;
   }
 
   const startIntersection = segment.startIntersection;
   const endIntersection = segment.endIntersection;
-  if (!isValidAdjacentEdge(startIntersection, endIntersection)) {
+  if (!isValidAdjacentWorldEdge(world, startIntersection, endIntersection)) {
     return null;
   }
 
@@ -144,12 +195,12 @@ function clampNumber(value, min, max) {
   return Math.max(min, Math.min(max, number));
 }
 
-function sanitizePlayerState(payload) {
+function sanitizePlayerState(payload, world) {
   const visible = !!payload.visible;
-  const current = payload.current && isValidIntersection(payload.current)
+  const current = payload.current && isValidWorldIntersection(world, payload.current)
     ? { ...payload.current }
     : null;
-  const segment = sanitizeSegment(payload.segment);
+  const segment = sanitizeSegment(payload.segment, world);
 
   return {
     visible,
@@ -210,6 +261,7 @@ function serializeRoomState(room, ws) {
   return {
     type: 'room_state',
     roomId: room.id,
+    world: room.world,
     playerCount: getRoomPlayerCount(room),
     players: Array.from(room.players.entries()).map(([playerId, player]) => ({
       id: playerId,
@@ -230,6 +282,7 @@ function sendRoomInfo(room) {
   broadcast(room, {
     type: 'room_info',
     roomId: room.id,
+    world: room.world,
     playerCount: getRoomPlayerCount(room),
   });
 }
@@ -278,13 +331,14 @@ wss.on('connection', (ws) => {
     segment: null,
   });
 
- send(ws, {
-  type: 'welcome',
-  playerId: ws.playerId,
-  roomId: ws.room.id,
-  maxPlayers: MAX_PLAYERS_PER_ROOM,
-  shareUrl: getShareableWsUrl(PORT),
-});
+  send(ws, {
+    type: 'welcome',
+    playerId: ws.playerId,
+    roomId: ws.room.id,
+    world: ws.room.world,
+    maxPlayers: MAX_PLAYERS_PER_ROOM,
+    shareUrl: getShareableWsUrl(PORT),
+  });
 
   send(ws, serializeRoomState(ws.room, ws));
   sendRoomInfo(ws.room);
@@ -318,7 +372,7 @@ wss.on('connection', (ws) => {
         }
 
         ws.lastPlayerStateAt = now;
-        const player = sanitizePlayerState(message.player || {});
+        const player = sanitizePlayerState(message.player || {}, room.world);
         room.players.set(ws.playerId, player);
 
         broadcast(room, {
@@ -332,7 +386,7 @@ wss.on('connection', (ws) => {
       case 'edge_touch': {
         const start = message.start;
         const end = message.end;
-        if (!isValidAdjacentEdge(start, end)) {
+        if (!isValidAdjacentWorldEdge(room.world, start, end)) {
           return;
         }
 

@@ -6,13 +6,50 @@ const ctx = canvas.getContext('2d');
 
 let guiInstance = null;
 
+function parseCssPixelValue(value) {
+  const number = Number.parseFloat(value);
+  return Number.isFinite(number) ? number : 0;
+}
+
+function getSafeAreaInsets() {
+  const styles = getComputedStyle(document.documentElement);
+  return {
+    left: parseCssPixelValue(styles.getPropertyValue('--safe-left')),
+    right: parseCssPixelValue(styles.getPropertyValue('--safe-right')),
+    top: parseCssPixelValue(styles.getPropertyValue('--safe-top')),
+    bottom: parseCssPixelValue(styles.getPropertyValue('--safe-bottom')),
+  };
+}
+
+function getViewportSize() {
+  const visualViewport = window.visualViewport;
+  const safeArea = getSafeAreaInsets();
+  const widthCandidates = [
+    visualViewport && visualViewport.width,
+    window.innerWidth,
+    document.documentElement && document.documentElement.clientWidth,
+    document.body && document.body.clientWidth,
+  ].filter((value) => Number.isFinite(value) && value > 0);
+  const baseWidth = Math.max(...widthCandidates);
+  const height = visualViewport && Number.isFinite(visualViewport.height)
+    ? visualViewport.height
+    : window.innerHeight;
+
+  return {
+    width: Math.max(1, Math.round(baseWidth + safeArea.left + safeArea.right)),
+    height: Math.max(1, Math.round(height + safeArea.top + safeArea.bottom)),
+    safeArea,
+  };
+}
+
 function applyGuiLayout(gui) {
   if (!gui) {
     return;
   }
 
   const margin = 12;
-  const width = Math.max(240, Math.min(320, window.innerWidth - margin * 2));
+  const viewportSize = getViewportSize();
+  const width = Math.max(240, Math.min(320, viewportSize.width - margin * 2));
   const el = gui.domElement;
 
   el.style.setProperty('--width', `${width}px`);
@@ -49,6 +86,7 @@ function getDefaultNetworkUrl() {
 const config = {
   backgroundColor: "#000000",
   gridSize: 84,
+  minCellScreenPx: 32,
   gridColor: "#ffffff",
   gridOpacity: 0.1,
   gridLineWidth: 1,
@@ -90,6 +128,12 @@ const config = {
   revealImageScale: 1,
   revealImageOffsetX: 0,
   revealImageOffsetY: 0,
+  revealVignetteEnabled: true,
+  revealVignetteColor: "#000000",
+  revealVignetteInnerOpacity: 0,
+  revealVignetteEdgeOpacity: 1,
+  revealVignetteSize: 100,
+  revealVignetteCurve: 1,
   revealIncludeCurrentSegment: true,
   revealEdgeActiveThreshold: 0.01,
   revealOpacity1: 0.1,
@@ -108,15 +152,114 @@ const config = {
   showIntersections: true,
   showRevealCells: false,
   showPlayerIds: false,
+  showViewportDebug: false,
   networkEnabled: true,
   networkUrl: getDefaultNetworkUrl(),
   networkSendIntervalMs: 50,
   networkReconnectDelayMs: 1500,
 };
 
+function createDefaultRoomWorld() {
+  return {
+    cols: 20,
+    rows: 12,
+    cellSize: config.gridSize,
+    minCellScreenPx: config.minCellScreenPx,
+    movementBounds: {
+      minCol: -100,
+      maxCol: 120,
+      minRow: -100,
+      maxRow: 112,
+    },
+    image: {
+      fitMode: config.revealImageFitMode,
+      scale: config.revealImageScale,
+      offsetX: config.revealImageOffsetX,
+      offsetY: config.revealImageOffsetY,
+      vignetteEnabled: config.revealVignetteEnabled,
+      vignetteColor: config.revealVignetteColor,
+      vignetteInnerOpacity: config.revealVignetteInnerOpacity,
+      vignetteEdgeOpacity: config.revealVignetteEdgeOpacity,
+      vignetteSize: config.revealVignetteSize,
+      vignetteCurve: config.revealVignetteCurve,
+    },
+  };
+}
+
+function clampInteger(value, min, max, fallback) {
+  const number = Math.round(Number(value));
+  if (!Number.isFinite(number)) {
+    return fallback;
+  }
+
+  return clamp(number, min, max);
+}
+
+function clampFiniteNumber(value, min, max, fallback) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) {
+    return fallback;
+  }
+
+  return clamp(number, min, max);
+}
+
+function sanitizeRoomWorld(value = {}) {
+  const fallback = createDefaultRoomWorld();
+  const image = value.image && typeof value.image === 'object'
+    ? value.image
+    : {};
+  const rawMovementBounds = value.movementBounds && typeof value.movementBounds === 'object'
+    ? value.movementBounds
+    : {};
+  const cols = clampInteger(value.cols, 1, 200, fallback.cols);
+  const rows = clampInteger(value.rows, 1, 200, fallback.rows);
+  const movementBounds = {
+    minCol: clampInteger(rawMovementBounds.minCol, -10000, cols, fallback.movementBounds.minCol),
+    maxCol: clampInteger(rawMovementBounds.maxCol, cols, 10000, fallback.movementBounds.maxCol),
+    minRow: clampInteger(rawMovementBounds.minRow, -10000, rows, fallback.movementBounds.minRow),
+    maxRow: clampInteger(rawMovementBounds.maxRow, rows, 10000, fallback.movementBounds.maxRow),
+  };
+
+  return {
+    cols,
+    rows,
+    cellSize: clampFiniteNumber(value.cellSize, 20, 400, fallback.cellSize),
+    minCellScreenPx: clampFiniteNumber(value.minCellScreenPx, 12, 160, fallback.minCellScreenPx),
+    movementBounds,
+    image: {
+      fitMode: ['native', 'contain', 'cover'].includes(image.fitMode)
+        ? image.fitMode
+        : fallback.image.fitMode,
+      scale: clampFiniteNumber(image.scale, 0.01, 10, fallback.image.scale),
+      offsetX: Number.isFinite(Number(image.offsetX)) ? Number(image.offsetX) : fallback.image.offsetX,
+      offsetY: Number.isFinite(Number(image.offsetY)) ? Number(image.offsetY) : fallback.image.offsetY,
+      vignetteEnabled: image.vignetteEnabled == null
+        ? fallback.image.vignetteEnabled
+        : !!image.vignetteEnabled,
+      vignetteColor: typeof image.vignetteColor === 'string'
+        ? image.vignetteColor
+        : fallback.image.vignetteColor,
+      vignetteInnerOpacity: clampFiniteNumber(
+        image.vignetteInnerOpacity,
+        0,
+        1,
+        fallback.image.vignetteInnerOpacity,
+      ),
+      vignetteEdgeOpacity: clampFiniteNumber(
+        image.vignetteEdgeOpacity,
+        0,
+        1,
+        fallback.image.vignetteEdgeOpacity,
+      ),
+      vignetteSize: clampFiniteNumber(image.vignetteSize, 0, 2000, fallback.image.vignetteSize),
+      vignetteCurve: clampFiniteNumber(image.vignetteCurve, 0.1, 6, fallback.image.vignetteCurve),
+    },
+  };
+}
+
 const viewport = {
-  width: window.innerWidth,
-  height: window.innerHeight,
+  ...getViewportSize(),
   dpr: Math.max(1, Math.min(2, window.devicePixelRatio || 1)),
 };
 
@@ -133,6 +276,18 @@ const state = {
   players: new Map(),
   activeEdges: new Map(),
   revealCells: new Map(),
+  room: {
+    world: createDefaultRoomWorld(),
+  },
+  view: {
+    scale: 1,
+    fitScale: 1,
+    minScale: 1,
+    offsetX: 0,
+    offsetY: 0,
+    worldWidth: 1,
+    worldHeight: 1,
+  },
   alternatingAxisStartsHorizontal: true,
   nextDebugPlayerIndex: 1,
   network: {
@@ -437,6 +592,91 @@ function resetRemoteState() {
   updateNetworkInfo();
 }
 
+function syncConfigFromRoomWorld(world) {
+  config.gridSize = world.cellSize;
+  config.minCellScreenPx = world.minCellScreenPx;
+  config.revealImageFitMode = world.image.fitMode;
+  config.revealImageScale = world.image.scale;
+  config.revealImageOffsetX = world.image.offsetX;
+  config.revealImageOffsetY = world.image.offsetY;
+  config.revealVignetteEnabled = world.image.vignetteEnabled;
+  config.revealVignetteColor = world.image.vignetteColor;
+  config.revealVignetteInnerOpacity = world.image.vignetteInnerOpacity;
+  config.revealVignetteEdgeOpacity = world.image.vignetteEdgeOpacity;
+  config.revealVignetteSize = world.image.vignetteSize;
+  config.revealVignetteCurve = world.image.vignetteCurve;
+}
+
+function clampPlayersToRoomWorld() {
+  for (const player of state.players.values()) {
+    if (!player.current) {
+      continue;
+    }
+
+    const clamped = {
+      col: clamp(player.current.col, minGridCol(), maxGridCol()),
+      row: clamp(player.current.row, minGridRow(), maxGridRow()),
+    };
+
+    if (!sameIntersection(player.current, clamped)) {
+      placePlayerAt(player, clamped);
+      resetPlayerNavigation(player);
+    }
+  }
+}
+
+function applyRoomWorld(payload) {
+  if (!payload || typeof payload !== 'object') {
+    return;
+  }
+
+  state.room.world = sanitizeRoomWorld(payload);
+  syncConfigFromRoomWorld(state.room.world);
+  updateViewTransform();
+  rebuildRevealSource();
+  clampPlayersToRoomWorld();
+
+  if (state.pointer.active) {
+    refreshPointerTargetFromStoredPointer();
+  }
+}
+
+function syncRoomWorldFromConfig({ geometryChanged = false } = {}) {
+  state.room.world = sanitizeRoomWorld({
+    ...state.room.world,
+    cellSize: config.gridSize,
+    minCellScreenPx: config.minCellScreenPx,
+    image: {
+      fitMode: config.revealImageFitMode,
+      scale: config.revealImageScale,
+      offsetX: config.revealImageOffsetX,
+      offsetY: config.revealImageOffsetY,
+      vignetteEnabled: config.revealVignetteEnabled,
+      vignetteColor: config.revealVignetteColor,
+      vignetteInnerOpacity: config.revealVignetteInnerOpacity,
+      vignetteEdgeOpacity: config.revealVignetteEdgeOpacity,
+      vignetteSize: config.revealVignetteSize,
+      vignetteCurve: config.revealVignetteCurve,
+    },
+  });
+
+  updateViewTransform();
+  rebuildRevealSource();
+
+  if (geometryChanged) {
+    for (const player of state.players.values()) {
+      if (player.visible && player.current) {
+        placePlayerAt(player, player.current);
+        resetPlayerNavigation(player);
+      }
+    }
+  }
+
+  if (state.pointer.active) {
+    refreshPointerTargetFromStoredPointer();
+  }
+}
+
 function applyIncomingPlayerState(playerId, payload) {
   const mappedId = normalizeIncomingPlayerId(playerId);
 
@@ -545,6 +785,8 @@ function handleNetworkMessage(message) {
       state.network.roomId = message.roomId || null;
       state.network.playerCount = 1;
 
+      applyRoomWorld(message.world);
+
       if (message.shareUrl) {
         networkInfo.shareUrl = message.shareUrl;
       }
@@ -570,6 +812,7 @@ function handleNetworkMessage(message) {
       if (message.roomId) {
         state.network.roomId = message.roomId;
       }
+      applyRoomWorld(message.world);
       applyRoomPlayersSnapshot(Array.isArray(message.players) ? message.players : []);
       applyRoomEdgesSnapshot(Array.isArray(message.activeEdges) ? message.activeEdges : []);
       if (Number.isFinite(message.playerCount)) {
@@ -801,62 +1044,137 @@ function colorWithAlpha(hex, alpha) {
   return `rgba(${r}, ${g}, ${b}, ${alpha})`;
 }
 
+function getRoomWorld() {
+  return state.room.world;
+}
+
+function getWorldCellSize() {
+  return Math.max(1, getRoomWorld().cellSize || config.gridSize);
+}
+
+function getWorldWidth() {
+  return getRoomWorld().cols * getWorldCellSize();
+}
+
+function getWorldHeight() {
+  return getRoomWorld().rows * getWorldCellSize();
+}
+
+function updateViewTransform() {
+  const worldWidth = Math.max(1, getWorldWidth());
+  const worldHeight = Math.max(1, getWorldHeight());
+  const fitScale = Math.min(
+    viewport.width / worldWidth,
+    viewport.height / worldHeight,
+  );
+  const minScale = Math.max(0.01, getRoomWorld().minCellScreenPx / getWorldCellSize());
+  const scale = Math.max(fitScale, minScale);
+
+  state.view.worldWidth = worldWidth;
+  state.view.worldHeight = worldHeight;
+  state.view.fitScale = fitScale;
+  state.view.minScale = minScale;
+  state.view.scale = scale;
+  state.view.offsetX = (viewport.width - worldWidth * scale) * 0.5;
+  state.view.offsetY = (viewport.height - worldHeight * scale) * 0.5;
+}
+
+function worldToScreenPoint(point) {
+  return {
+    x: state.view.offsetX + point.x * state.view.scale,
+    y: state.view.offsetY + point.y * state.view.scale,
+  };
+}
+
+function screenToWorldPoint(point) {
+  return {
+    x: (point.x - state.view.offsetX) / state.view.scale,
+    y: (point.y - state.view.offsetY) / state.view.scale,
+  };
+}
+
+function worldRectToScreenRect(rect) {
+  return {
+    x: state.view.offsetX + rect.x * state.view.scale,
+    y: state.view.offsetY + rect.y * state.view.scale,
+    width: rect.width * state.view.scale,
+    height: rect.height * state.view.scale,
+  };
+}
+
 function getGridOffset() {
-  return config.gridLineWidth % 2 === 1 ? 0.5 : 0;
+  return 0;
+}
+
+function getMovementBounds() {
+  return getRoomWorld().movementBounds;
+}
+
+function minGridCol() {
+  return getMovementBounds().minCol;
 }
 
 function maxGridCol() {
-  return Math.ceil(viewport.width / config.gridSize);
+  return getMovementBounds().maxCol;
+}
+
+function minGridRow() {
+  return getMovementBounds().minRow;
 }
 
 function maxGridRow() {
-  return Math.ceil(viewport.height / config.gridSize);
+  return getMovementBounds().maxRow;
 }
 
 function cellCountX() {
-  return Math.ceil(viewport.width / config.gridSize);
+  return getRoomWorld().cols;
 }
 
 function cellCountY() {
-  return Math.ceil(viewport.height / config.gridSize);
+  return getRoomWorld().rows;
 }
 
 function toPoint(intersection) {
   const offset = getGridOffset();
+  const cellSize = getWorldCellSize();
   return {
-    x: intersection.col * config.gridSize + offset,
-    y: intersection.row * config.gridSize + offset,
+    x: intersection.col * cellSize + offset,
+    y: intersection.row * cellSize + offset,
   };
 }
 
 function nearestIntersection(x, y) {
   const offset = getGridOffset();
-  const col = clamp(Math.round((x - offset) / config.gridSize), 0, maxGridCol());
-  const row = clamp(Math.round((y - offset) / config.gridSize), 0, maxGridRow());
+  const cellSize = getWorldCellSize();
+  const col = clamp(Math.round((x - offset) / cellSize), minGridCol(), maxGridCol());
+  const row = clamp(Math.round((y - offset) / cellSize), minGridRow(), maxGridRow());
   return { col, row };
 }
 
 function randomVisibleIntersection() {
   const offset = getGridOffset();
+  const cellSize = getWorldCellSize();
+  const imageMaxCol = getRoomWorld().cols;
+  const imageMaxRow = getRoomWorld().rows;
   const maxSpawnHalfSize = Math.max(config.nodeWidth, config.nodeHeight)
     * Math.max(1, config.nodeSpawnStartScale)
     * 0.5;
   const visualPadding = maxSpawnHalfSize + config.nodeGlowBlur + config.nodeBorderWidth + 12;
 
-  let minCol = Math.ceil((visualPadding - offset) / config.gridSize);
-  let maxCol = Math.floor((viewport.width - visualPadding - offset) / config.gridSize);
-  let minRow = Math.ceil((visualPadding - offset) / config.gridSize);
-  let maxRow = Math.floor((viewport.height - visualPadding - offset) / config.gridSize);
+  let minCol = Math.ceil((visualPadding - offset) / cellSize);
+  let maxCol = Math.floor((getWorldWidth() - visualPadding - offset) / cellSize);
+  let minRow = Math.ceil((visualPadding - offset) / cellSize);
+  let maxRow = Math.floor((getWorldHeight() - visualPadding - offset) / cellSize);
 
-  minCol = clamp(minCol, 0, maxGridCol());
-  maxCol = clamp(maxCol, 0, maxGridCol());
-  minRow = clamp(minRow, 0, maxGridRow());
-  maxRow = clamp(maxRow, 0, maxGridRow());
+  minCol = clamp(minCol, 0, imageMaxCol);
+  maxCol = clamp(maxCol, 0, imageMaxCol);
+  minRow = clamp(minRow, 0, imageMaxRow);
+  maxRow = clamp(maxRow, 0, imageMaxRow);
 
   if (maxCol < minCol || maxRow < minRow) {
     return {
-      col: Math.round(maxGridCol() * 0.5),
-      row: Math.round(maxGridRow() * 0.5),
+      col: Math.round(imageMaxCol * 0.5),
+      row: Math.round(imageMaxRow * 0.5),
     };
   }
 
@@ -881,14 +1199,15 @@ function createCellKey(cell) {
 }
 
 function getCellRect(cell) {
-  const x = cell.col * config.gridSize;
-  const y = cell.row * config.gridSize;
+  const cellSize = getWorldCellSize();
+  const x = cell.col * cellSize;
+  const y = cell.row * cellSize;
 
   return {
     x,
     y,
-    width: Math.max(0, Math.min(config.gridSize, viewport.width - x)),
-    height: Math.max(0, Math.min(config.gridSize, viewport.height - y)),
+    width: cellSize,
+    height: cellSize,
   };
 }
 
@@ -1009,7 +1328,11 @@ function refreshPointerTargetFromStoredPointer() {
     return;
   }
 
-  const nextTarget = nearestIntersection(state.pointer.x, state.pointer.y);
+  const pointerWorld = screenToWorldPoint({
+    x: state.pointer.x,
+    y: state.pointer.y,
+  });
+  const nextTarget = nearestIntersection(pointerWorld.x, pointerWorld.y);
   state.pointer.targetIntersection = nextTarget;
 
   const localPlayer = getLocalPlayer();
@@ -1344,22 +1667,24 @@ function loadRevealImage() {
 }
 
 function rebuildRevealSource() {
-  revealSourceCanvas.width = Math.max(1, Math.round(viewport.width));
-  revealSourceCanvas.height = Math.max(1, Math.round(viewport.height));
+  revealSourceCanvas.width = Math.max(1, Math.round(getWorldWidth()));
+  revealSourceCanvas.height = Math.max(1, Math.round(getWorldHeight()));
 
   revealSourceCtx.clearRect(0, 0, revealSourceCanvas.width, revealSourceCanvas.height);
 
   if (assets.revealImageLoaded && assets.revealImage.naturalWidth > 0 && assets.revealImage.naturalHeight > 0) {
-  drawRevealImageIntoCanvas(
-    revealSourceCtx,
-    assets.revealImage,
-    revealSourceCanvas.width,
-    revealSourceCanvas.height,
-  );
+    drawRevealImageIntoCanvas(
+      revealSourceCtx,
+      assets.revealImage,
+      revealSourceCanvas.width,
+      revealSourceCanvas.height,
+    );
+    applyRevealEdgeVignette(revealSourceCtx, revealSourceCanvas.width, revealSourceCanvas.height);
     return;
   }
 
   drawFallbackRevealSource();
+  applyRevealEdgeVignette(revealSourceCtx, revealSourceCanvas.width, revealSourceCanvas.height);
 }
 
 function drawRevealImageIntoCanvas(targetCtx, image, width, height) {
@@ -1389,6 +1714,49 @@ function drawRevealImageIntoCanvas(targetCtx, image, width, height) {
 
   targetCtx.clearRect(0, 0, width, height);
   targetCtx.drawImage(image, drawX, drawY, drawWidth, drawHeight);
+}
+
+function applyRevealEdgeVignette(targetCtx, width, height) {
+  const world = getRoomWorld();
+  const imageConfig = world.image || {};
+  if (!imageConfig.vignetteEnabled) {
+    return;
+  }
+
+  const size = Math.max(0, imageConfig.vignetteSize || 0);
+  const edgeOpacity = clamp(Number(imageConfig.vignetteEdgeOpacity) || 0, 0, 1);
+  const innerOpacity = clamp(Number(imageConfig.vignetteInnerOpacity) || 0, 0, 1);
+  if (edgeOpacity <= 0 && innerOpacity <= 0) {
+    return;
+  }
+
+  const curve = Math.max(0.1, Number(imageConfig.vignetteCurve) || 1);
+  const { r, g, b } = hexToRgb(imageConfig.vignetteColor || '#000000');
+  const imageData = targetCtx.getImageData(0, 0, width, height);
+  const { data } = imageData;
+
+  for (let y = 0; y < height; y += 1) {
+    const verticalDistance = Math.min(y, height - 1 - y);
+
+    for (let x = 0; x < width; x += 1) {
+      const horizontalDistance = Math.min(x, width - 1 - x);
+      const edgeDistance = Math.min(horizontalDistance, verticalDistance);
+      const distanceT = size <= 0 ? 0 : clamp(edgeDistance / size, 0, 1);
+      const fadeT = Math.pow(distanceT, curve);
+      const overlayAlpha = lerp(edgeOpacity, innerOpacity, fadeT);
+
+      if (overlayAlpha <= 0) {
+        continue;
+      }
+
+      const index = (y * width + x) * 4;
+      data[index] = Math.round(lerp(data[index], r, overlayAlpha));
+      data[index + 1] = Math.round(lerp(data[index + 1], g, overlayAlpha));
+      data[index + 2] = Math.round(lerp(data[index + 2], b, overlayAlpha));
+    }
+  }
+
+  targetCtx.putImageData(imageData, 0, 0);
 }
 
 function drawFallbackRevealSource() {
@@ -1434,7 +1802,7 @@ function drawFallbackRevealSource() {
   revealSourceCtx.strokeStyle = 'rgba(210, 228, 255, 0.08)';
   revealSourceCtx.lineWidth = 1;
 
-  const bandSpacing = Math.max(80, Math.round(config.gridSize * 1.4));
+  const bandSpacing = Math.max(80, Math.round(getWorldCellSize() * 1.4));
   for (let x = -height; x < width + height; x += bandSpacing) {
     revealSourceCtx.beginPath();
     revealSourceCtx.moveTo(x, 0);
@@ -1468,21 +1836,28 @@ function drawFallbackRevealSource() {
 }
 
 function drawBaseGrid() {
-  const offset = getGridOffset();
+  const cellSize = getWorldCellSize();
+  const screenCellSize = cellSize * state.view.scale;
+  if (screenCellSize <= 0) {
+    return;
+  }
+
+  const firstVerticalX = ((state.view.offsetX % screenCellSize) + screenCellSize) % screenCellSize;
+  const firstHorizontalY = ((state.view.offsetY % screenCellSize) + screenCellSize) % screenCellSize;
 
   ctx.strokeStyle = colorWithAlpha(config.gridColor, config.gridOpacity);
-  ctx.lineWidth = config.gridLineWidth;
+  ctx.lineWidth = Math.max(0.5, config.gridLineWidth * state.view.scale);
 
   ctx.beginPath();
 
-  for (let x = 0; x <= viewport.width + config.gridSize; x += config.gridSize) {
-    ctx.moveTo(x + offset, 0);
-    ctx.lineTo(x + offset, viewport.height);
+  for (let x = firstVerticalX; x <= viewport.width + screenCellSize; x += screenCellSize) {
+    ctx.moveTo(x, 0);
+    ctx.lineTo(x, viewport.height);
   }
 
-  for (let y = 0; y <= viewport.height + config.gridSize; y += config.gridSize) {
-    ctx.moveTo(0, y + offset);
-    ctx.lineTo(viewport.width, y + offset);
+  for (let y = firstHorizontalY; y <= viewport.height + screenCellSize; y += screenCellSize) {
+    ctx.moveTo(0, y);
+    ctx.lineTo(viewport.width, y);
   }
 
   ctx.stroke();
@@ -1505,6 +1880,8 @@ function drawRevealCells() {
       continue;
     }
 
+    const screenRect = worldRectToScreenRect(rect);
+
     ctx.save();
     ctx.globalAlpha = alpha * config.revealImageOpacity;
     ctx.drawImage(
@@ -1513,17 +1890,17 @@ function drawRevealCells() {
       rect.y,
       rect.width,
       rect.height,
-      rect.x,
-      rect.y,
-      rect.width,
-      rect.height,
+      screenRect.x,
+      screenRect.y,
+      screenRect.width,
+      screenRect.height,
     );
     ctx.restore();
 
     if (config.revealTintOpacity > 0) {
       ctx.save();
       ctx.fillStyle = colorWithAlpha(config.revealTintColor, alpha * config.revealTintOpacity);
-      ctx.fillRect(rect.x, rect.y, rect.width, rect.height);
+      ctx.fillRect(screenRect.x, screenRect.y, screenRect.width, screenRect.height);
       ctx.restore();
     }
   }
@@ -1538,6 +1915,7 @@ function drawRevealCellDebug() {
 
   for (const entry of state.revealCells.values()) {
     const rect = getCellRect(entry.cell);
+    const screenRect = worldRectToScreenRect(rect);
     const alpha = getRevealCellAlpha(entry);
 
     if (alpha <= 0) {
@@ -1546,13 +1924,22 @@ function drawRevealCellDebug() {
 
     ctx.strokeStyle = `rgba(255, 255, 255, ${0.16 + alpha * 0.4})`;
     ctx.lineWidth = 1;
-    ctx.strokeRect(rect.x + 0.5, rect.y + 0.5, Math.max(0, rect.width - 1), Math.max(0, rect.height - 1));
+    ctx.strokeRect(
+      screenRect.x + 0.5,
+      screenRect.y + 0.5,
+      Math.max(0, screenRect.width - 1),
+      Math.max(0, screenRect.height - 1),
+    );
 
     ctx.fillStyle = `rgba(255, 255, 255, ${0.18 + alpha * 0.42})`;
     ctx.font = '11px monospace';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    ctx.fillText(String(entry.activeEdgeCount), rect.x + rect.width * 0.5, rect.y + rect.height * 0.5);
+    ctx.fillText(
+      String(entry.activeEdgeCount),
+      screenRect.x + screenRect.width * 0.5,
+      screenRect.y + screenRect.height * 0.5,
+    );
   }
 
   ctx.restore();
@@ -1563,14 +1950,16 @@ function drawSingleActiveEdgeLine(startX, startY, endX, endY, alphaMultiplier = 
   ctx.lineCap = config.activeEdgeLineCap;
   ctx.lineJoin = config.activeEdgeLineCap;
 
+  const visualScale = state.view.scale;
   const lineAlpha = config.activeEdgeOpacity * alphaMultiplier;
   const glowAlpha = config.activeEdgeGlowOpacity * alphaMultiplier;
-  const glowSpread = Math.max(0, config.activeEdgeGlowWidth);
-  const glowEmitterWidth = Math.max(1.25, config.activeEdgeLineWidth + glowSpread * 0.28);
+  const glowSpread = Math.max(0, config.activeEdgeGlowWidth * visualScale);
+  const activeLineWidth = Math.max(0.5, config.activeEdgeLineWidth * visualScale);
+  const glowEmitterWidth = Math.max(1.25, activeLineWidth + glowSpread * 0.28);
   const glowStrokeAlpha = Math.min(1, glowAlpha * 0.16);
 
   if (glowAlpha > 0 && (config.activeEdgeGlowBlur > 0 || glowSpread > 0)) {
-    ctx.shadowBlur = config.activeEdgeGlowBlur + glowSpread;
+    ctx.shadowBlur = config.activeEdgeGlowBlur * visualScale + glowSpread;
     ctx.shadowColor = colorWithAlpha(config.activeEdgeGlowColor, glowAlpha);
     ctx.strokeStyle = colorWithAlpha(config.activeEdgeGlowColor, glowStrokeAlpha);
     ctx.lineWidth = glowEmitterWidth;
@@ -1583,7 +1972,7 @@ function drawSingleActiveEdgeLine(startX, startY, endX, endY, alphaMultiplier = 
   ctx.shadowBlur = 0;
   ctx.shadowColor = 'rgba(0, 0, 0, 0)';
   ctx.strokeStyle = colorWithAlpha(config.activeEdgeColor, lineAlpha);
-  ctx.lineWidth = Math.max(0.5, config.activeEdgeLineWidth);
+  ctx.lineWidth = activeLineWidth;
   ctx.beginPath();
   ctx.moveTo(startX, startY);
   ctx.lineTo(endX, endY);
@@ -1604,8 +1993,8 @@ function drawActiveEdges() {
       continue;
     }
 
-    const startPoint = toPoint(edge.start);
-    const endPoint = toPoint(edge.end);
+    const startPoint = worldToScreenPoint(toPoint(edge.start));
+    const endPoint = worldToScreenPoint(toPoint(edge.end));
 
     drawSingleActiveEdgeLine(
       startPoint.x,
@@ -1627,13 +2016,14 @@ function drawActiveSegments() {
       continue;
     }
 
-    const startPoint = toPoint(player.segment.startIntersection);
+    const startPoint = worldToScreenPoint(toPoint(player.segment.startIntersection));
+    const endPoint = worldToScreenPoint({ x: player.x, y: player.y });
 
     drawSingleActiveEdgeLine(
       startPoint.x,
       startPoint.y,
-      player.x,
-      player.y,
+      endPoint.x,
+      endPoint.y,
       1,
     );
   }
@@ -1662,7 +2052,7 @@ function drawPlayerLabel(player, x, y, alpha) {
 
   ctx.save();
   ctx.fillStyle = `rgba(255, 255, 255, ${alpha * 0.7})`;
-  ctx.font = '11px monospace';
+  ctx.font = `${Math.max(9, 11 * state.view.scale)}px monospace`;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'bottom';
   ctx.fillText(player.id, x, y - 10);
@@ -1691,29 +2081,31 @@ function drawNode(player) {
 
   const timeSeconds = state.now * 0.001;
   const pulse = 1 + Math.sin(timeSeconds * config.pulseSpeed) * config.nodePulseAmplitude;
-  const width = config.nodeWidth * pulse * spawnScale;
-  const height = config.nodeHeight * pulse * spawnScale;
-  const x = player.x - width * 0.5;
-  const y = player.y - height * 0.5;
+  const visualScale = state.view.scale;
+  const width = config.nodeWidth * pulse * spawnScale * visualScale;
+  const height = config.nodeHeight * pulse * spawnScale * visualScale;
+  const screenPoint = worldToScreenPoint({ x: player.x, y: player.y });
+  const x = screenPoint.x - width * 0.5;
+  const y = screenPoint.y - height * 0.5;
 
   ctx.save();
-  ctx.shadowBlur = config.nodeGlowBlur;
+  ctx.shadowBlur = config.nodeGlowBlur * visualScale;
   ctx.shadowColor = colorWithAlpha(config.nodeGlowColor, config.nodeGlowOpacity * spawnAlpha);
   ctx.fillStyle = colorWithAlpha(config.nodeColor, spawnAlpha);
-  roundedRectPath(x, y, width, height, config.nodeRadius);
+  roundedRectPath(x, y, width, height, config.nodeRadius * visualScale);
   ctx.fill();
 
   if (config.nodeBorderWidth > 0 && config.nodeBorderOpacity > 0) {
     ctx.shadowBlur = 0;
     ctx.strokeStyle = colorWithAlpha(config.nodeBorderColor, config.nodeBorderOpacity * spawnAlpha);
-    ctx.lineWidth = config.nodeBorderWidth;
-    roundedRectPath(x, y, width, height, config.nodeRadius);
+    ctx.lineWidth = config.nodeBorderWidth * visualScale;
+    roundedRectPath(x, y, width, height, config.nodeRadius * visualScale);
     ctx.stroke();
   }
 
   ctx.restore();
 
-  drawPlayerLabel(player, player.x, y, spawnAlpha);
+  drawPlayerLabel(player, screenPoint.x, y, spawnAlpha);
 }
 
 function drawNodes() {
@@ -1727,13 +2119,13 @@ function drawDebugTarget() {
     return;
   }
 
-  const point = toPoint(state.pointer.targetIntersection);
+  const point = worldToScreenPoint(toPoint(state.pointer.targetIntersection));
 
   ctx.save();
   ctx.strokeStyle = 'rgba(255, 255, 255, 0.35)';
-  ctx.lineWidth = 1;
+  ctx.lineWidth = Math.max(0.5, state.view.scale);
   ctx.beginPath();
-  ctx.arc(point.x, point.y, 8, 0, Math.PI * 2);
+  ctx.arc(point.x, point.y, 8 * state.view.scale, 0, Math.PI * 2);
   ctx.stroke();
   ctx.restore();
 }
@@ -1743,16 +2135,79 @@ function drawDebugIntersections() {
     return;
   }
 
+  const cellSize = getWorldCellSize();
+  const topLeft = screenToWorldPoint({ x: 0, y: 0 });
+  const bottomRight = screenToWorldPoint({ x: viewport.width, y: viewport.height });
+  const firstCol = Math.max(minGridCol(), Math.floor(topLeft.x / cellSize) - 1);
+  const lastCol = Math.min(maxGridCol(), Math.ceil(bottomRight.x / cellSize) + 1);
+  const firstRow = Math.max(minGridRow(), Math.floor(topLeft.y / cellSize) - 1);
+  const lastRow = Math.min(maxGridRow(), Math.ceil(bottomRight.y / cellSize) + 1);
+
   ctx.save();
   ctx.fillStyle = 'rgba(255, 255, 255, 0.18)';
 
-  for (let col = 0; col <= maxGridCol(); col += 1) {
-    for (let row = 0; row <= maxGridRow(); row += 1) {
-      const point = toPoint({ col, row });
+  for (let col = firstCol; col <= lastCol; col += 1) {
+    for (let row = firstRow; row <= lastRow; row += 1) {
+      const point = worldToScreenPoint(toPoint({ col, row }));
       ctx.beginPath();
-      ctx.arc(point.x, point.y, 1.75, 0, Math.PI * 2);
+      ctx.arc(point.x, point.y, Math.max(1, 1.75 * state.view.scale), 0, Math.PI * 2);
       ctx.fill();
     }
+  }
+
+  ctx.restore();
+}
+
+function formatMetric(value) {
+  return Number.isFinite(value) ? String(Math.round(value * 100) / 100) : '-';
+}
+
+function drawViewportDebug() {
+  if (!config.showViewportDebug) {
+    return;
+  }
+
+  const visualViewport = window.visualViewport;
+  const canvasRect = canvas.getBoundingClientRect();
+  const docEl = document.documentElement;
+  const body = document.body;
+  const safeArea = getSafeAreaInsets();
+  const lines = [
+    `vv ${formatMetric(visualViewport && visualViewport.width)} x ${formatMetric(visualViewport && visualViewport.height)} s ${formatMetric(visualViewport && visualViewport.scale)}`,
+    `vv offset ${formatMetric(visualViewport && visualViewport.offsetLeft)}, ${formatMetric(visualViewport && visualViewport.offsetTop)}`,
+    `inner ${formatMetric(window.innerWidth)} x ${formatMetric(window.innerHeight)} dpr ${formatMetric(window.devicePixelRatio)}`,
+    `doc ${formatMetric(docEl && docEl.clientWidth)} x ${formatMetric(docEl && docEl.clientHeight)}`,
+    `body ${formatMetric(body && body.clientWidth)} x ${formatMetric(body && body.clientHeight)}`,
+    `screen ${formatMetric(window.screen && window.screen.width)} x ${formatMetric(window.screen && window.screen.height)}`,
+    `canvas css ${formatMetric(canvasRect.width)} x ${formatMetric(canvasRect.height)}`,
+    `canvas xy ${formatMetric(canvasRect.left)}, ${formatMetric(canvasRect.top)}`,
+    `canvas px ${canvas.width} x ${canvas.height}`,
+    `state ${viewport.width} x ${viewport.height}`,
+    `safe ${formatMetric(safeArea.left)}, ${formatMetric(safeArea.right)}, ${formatMetric(safeArea.top)}, ${formatMetric(safeArea.bottom)}`,
+    `view scale ${formatMetric(state.view.scale)} off ${formatMetric(state.view.offsetX)}, ${formatMetric(state.view.offsetY)}`,
+    `orientation ${window.matchMedia('(orientation: landscape)').matches ? 'landscape' : 'portrait'}`,
+  ];
+
+  const padding = 8;
+  const lineHeight = 13;
+  const x = Math.max(8, -canvasRect.left + 8);
+  const y = 8;
+  const width = 230;
+  const height = padding * 2 + lines.length * lineHeight;
+
+  ctx.save();
+  ctx.fillStyle = 'rgba(0, 0, 0, 0.78)';
+  ctx.fillRect(x, y, width, height);
+  ctx.strokeStyle = 'rgba(255, 255, 255, 0.22)';
+  ctx.lineWidth = 1;
+  ctx.strokeRect(x + 0.5, y + 0.5, width - 1, height - 1);
+  ctx.fillStyle = 'rgba(255, 255, 255, 0.88)';
+  ctx.font = '11px monospace';
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'top';
+
+  for (let index = 0; index < lines.length; index += 1) {
+    ctx.fillText(lines[index], x + padding, y + padding + index * lineHeight);
   }
 
   ctx.restore();
@@ -1779,34 +2234,25 @@ function render() {
   drawDebugIntersections();
   drawDebugTarget();
   drawNodes();
+  drawViewportDebug();
 }
 
 function resize() {
-  viewport.width = window.innerWidth;
-  viewport.height = window.innerHeight;
+  const viewportSize = getViewportSize();
+  viewport.width = viewportSize.width;
+  viewport.height = viewportSize.height;
   viewport.dpr = Math.max(1, Math.min(2, window.devicePixelRatio || 1));
 
   canvas.width = Math.round(viewport.width * viewport.dpr);
   canvas.height = Math.round(viewport.height * viewport.dpr);
   canvas.style.width = `${viewport.width}px`;
   canvas.style.height = `${viewport.height}px`;
+  canvas.style.left = `${-viewportSize.safeArea.left}px`;
+  canvas.style.top = `${-viewportSize.safeArea.top}px`;
 
   ctx.setTransform(viewport.dpr, 0, 0, viewport.dpr, 0, 0);
+  updateViewTransform();
   rebuildRevealSource();
-
-  for (const player of state.players.values()) {
-    if (player.visible && player.current) {
-      const clamped = {
-        col: clamp(player.current.col, 0, maxGridCol()),
-        row: clamp(player.current.row, 0, maxGridRow()),
-      };
-
-      placePlayerAt(player, clamped);
-      player.pathQueue = [];
-      player.segment = null;
-      player.turnHoldUntil = 0;
-    }
-  }
 
   if (state.pointer.active) {
     refreshPointerTargetFromStoredPointer();
@@ -1816,14 +2262,13 @@ function resize() {
   if (localPlayer && !playerCanFollowPointer(localPlayer)) {
     localPlayer.desiredTarget = null;
   }
-
-  sendLocalPlayerState(true);
 }
 
 function updatePointerTarget(clientX, clientY) {
+  const canvasRect = canvas.getBoundingClientRect();
   state.pointer.active = true;
-  state.pointer.x = clientX;
-  state.pointer.y = clientY;
+  state.pointer.x = clientX - canvasRect.left;
+  state.pointer.y = clientY - canvasRect.top;
   refreshPointerTargetFromStoredPointer();
 }
 
@@ -1835,10 +2280,41 @@ canvas.addEventListener('pointerdown', (event) => {
   updatePointerTarget(event.clientX, event.clientY);
 });
 
-window.addEventListener('resize', () => {
+function handleViewportChange() {
   resize();
   applyGuiLayout(guiInstance);
-});
+}
+
+let resizeFrame = 0;
+let resizeSettleTimer = 0;
+
+function scheduleViewportResize() {
+  if (resizeFrame) {
+    window.cancelAnimationFrame(resizeFrame);
+  }
+
+  resizeFrame = window.requestAnimationFrame(() => {
+    resizeFrame = 0;
+    handleViewportChange();
+  });
+
+  if (resizeSettleTimer) {
+    window.clearTimeout(resizeSettleTimer);
+  }
+
+  resizeSettleTimer = window.setTimeout(() => {
+    resizeSettleTimer = 0;
+    handleViewportChange();
+  }, 250);
+}
+
+window.addEventListener('resize', scheduleViewportResize);
+window.addEventListener('orientationchange', scheduleViewportResize);
+
+if (window.visualViewport) {
+  window.visualViewport.addEventListener('resize', scheduleViewportResize);
+  window.visualViewport.addEventListener('scroll', scheduleViewportResize);
+}
 
 function animate(now) {
   const deltaSeconds = Math.min(0.05, (now - state.now) * 0.001);
@@ -1865,7 +2341,16 @@ function setupGui() {
   sceneFolder.addColor(config, 'backgroundColor').name('Background');
 
   const gridFolder = gui.addFolder('Base Grid');
-  gridFolder.add(config, 'gridSize', 40, 200, 1).name('Size');
+  gridFolder.add(config, 'gridSize', 40, 200, 1)
+    .name('World Cell')
+    .onChange(() => {
+      syncRoomWorldFromConfig({ geometryChanged: true });
+    });
+  gridFolder.add(config, 'minCellScreenPx', 18, 120, 1)
+    .name('Min Screen Cell')
+    .onChange(() => {
+      syncRoomWorldFromConfig();
+    });
   gridFolder.addColor(config, 'gridColor').name('Color');
   gridFolder.add(config, 'gridOpacity', 0, 1, 0.01).name('Opacity');
   gridFolder.add(config, 'gridLineWidth', 1, 4, 1).name('Line Width');
@@ -1917,26 +2402,57 @@ function setupGui() {
   revealFolder.add(config, 'revealImageFitMode', ['native', 'contain', 'cover'])
   .name('Image Fit')
   .onChange(() => {
-    rebuildRevealSource();
+    syncRoomWorldFromConfig();
   });
 
 revealFolder.add(config, 'revealImageScale', 0.1, 4, 0.01)
   .name('Image Scale')
   .onChange(() => {
-    rebuildRevealSource();
+    syncRoomWorldFromConfig();
   });
 
 revealFolder.add(config, 'revealImageOffsetX', -4000, 4000, 1)
   .name('Image Offset X')
   .onChange(() => {
-    rebuildRevealSource();
+    syncRoomWorldFromConfig();
   });
 
 revealFolder.add(config, 'revealImageOffsetY', -4000, 4000, 1)
   .name('Image Offset Y')
   .onChange(() => {
-    rebuildRevealSource();
+    syncRoomWorldFromConfig();
   });
+
+  revealFolder.add(config, 'revealVignetteEnabled')
+    .name('Vignette')
+    .onChange(() => {
+      syncRoomWorldFromConfig();
+    });
+  revealFolder.addColor(config, 'revealVignetteColor')
+    .name('Vignette Color')
+    .onChange(() => {
+      syncRoomWorldFromConfig();
+    });
+  revealFolder.add(config, 'revealVignetteInnerOpacity', 0, 1, 0.01)
+    .name('Vignette Inner')
+    .onChange(() => {
+      syncRoomWorldFromConfig();
+    });
+  revealFolder.add(config, 'revealVignetteEdgeOpacity', 0, 1, 0.01)
+    .name('Vignette Edge')
+    .onChange(() => {
+      syncRoomWorldFromConfig();
+    });
+  revealFolder.add(config, 'revealVignetteSize', 0, 1000, 1)
+    .name('Vignette Size')
+    .onChange(() => {
+      syncRoomWorldFromConfig();
+    });
+  revealFolder.add(config, 'revealVignetteCurve', 0.1, 6, 0.1)
+    .name('Vignette Curve')
+    .onChange(() => {
+      syncRoomWorldFromConfig();
+    });
 
   revealFolder.add(config, 'revealIncludeCurrentSegment').name('Live Segment');
   revealFolder.add(config, 'revealEdgeActiveThreshold', 0, 1, 0.01).name('Active Threshold');
@@ -1957,6 +2473,7 @@ revealFolder.add(config, 'revealImageOffsetY', -4000, 4000, 1)
   debugFolder.add(config, 'showIntersections').name('Intersections');
   debugFolder.add(config, 'showRevealCells').name('Reveal Cells');
   debugFolder.add(config, 'showPlayerIds').name('Player IDs');
+  debugFolder.add(config, 'showViewportDebug').name('Viewport Metrics');
 
   const networkFolder = gui.addFolder('Network');
   networkFolder.add(config, 'networkEnabled').name('Enabled').onChange((value) => {

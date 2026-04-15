@@ -167,9 +167,16 @@ http://YOUR-IP:5173
 ---
 
 ## Status
-- Works great as-is. But the reveal experience isn't consistent across devices.
-	- This is because we're just locking the image and grid to the top corner.
-	- So someone on mobile might never see someone on desktop moving around out of their mobile frame.
-	- It's basically a typically 'responsive' web browser experience. Need to move away from this.
-- I'm strugging with the complexity of the next steps: I need to figure out the a way to guarantee people see each other in this Mini-Multiplayer-Online-"World" ;)
-- Current thinking is I need to revise the server/grid view logic to treat the grid/view like a world with one persistent camera (per room).
+- First canonical-room pass is in place.
+	- The server now sends fixed room/world metadata.
+	- Clients render the same fixed image/reveal room through a viewport transform.
+	- The visual grid can extend beyond the image/reveal bounds.
+	- Node movement can continue beyond the image area while reveal remains tied to the fixed image room.
+	- The reveal image is world-anchored and has a configurable edge-distance vignette.
+- Known mobile browser note:
+	- Safari mobile landscape can render the full available width.
+	- Chrome mobile landscape appears to reserve non-drawable left/right browser areas; the page fills Chrome's reported viewport, but Chrome does not expose those side bands to canvas content in a normal tab.
+- Next design focus:
+	- Prototype the cooperative enclosed-shape mechanic locally.
+	- Once the feel is right, move held/revealed shape state toward server ownership.
+	- Later, add stricter server authority/rate limiting before public use.
