@@ -5,6 +5,9 @@ const canvas = document.querySelector('#app');
 const ctx = canvas.getContext('2d');
 
 let guiInstance = null;
+const guiControllers = {
+  revealVignetteColor: null,
+};
 
 function parseCssPixelValue(value) {
   const number = Number.parseFloat(value);
@@ -66,6 +69,20 @@ function applyGuiLayout(gui) {
   el.style.zIndex = '30';
 }
 
+function setControllerEnabled(controller, enabled) {
+  if (!controller || !controller.domElement) {
+    return;
+  }
+
+  controller.domElement.style.opacity = enabled ? '1' : '0.4';
+  controller.domElement.style.pointerEvents = enabled ? 'auto' : 'none';
+}
+
+function updateRevealVignetteGuiState() {
+  const usesColor = config.revealVignetteMode === 'color';
+  setControllerEnabled(guiControllers.revealVignetteColor, usesColor);
+}
+
 const revealSourceCanvas = document.createElement('canvas');
 const revealSourceCtx = revealSourceCanvas.getContext('2d');
 
@@ -85,6 +102,11 @@ function getDefaultNetworkUrl() {
 
 const config = {
   backgroundColor: "#000000",
+  backgroundGradientEnabled: true,
+  backgroundGradientTopColor: "#000000",
+  backgroundGradientBottomColor: "#0b1728",
+  backgroundGradientTopAlpha: 1,
+  backgroundGradientBottomAlpha: 1,
   gridSize: 84,
   minCellScreenPx: 32,
   gridColor: "#ffffff",
@@ -129,6 +151,7 @@ const config = {
   revealImageOffsetX: 0,
   revealImageOffsetY: 0,
   revealVignetteEnabled: true,
+  revealVignetteMode: 'alpha',
   revealVignetteColor: "#000000",
   revealVignetteInnerOpacity: 0,
   revealVignetteEdgeOpacity: 1,
@@ -177,6 +200,7 @@ function createDefaultRoomWorld() {
       offsetX: config.revealImageOffsetX,
       offsetY: config.revealImageOffsetY,
       vignetteEnabled: config.revealVignetteEnabled,
+      vignetteMode: config.revealVignetteMode,
       vignetteColor: config.revealVignetteColor,
       vignetteInnerOpacity: config.revealVignetteInnerOpacity,
       vignetteEdgeOpacity: config.revealVignetteEdgeOpacity,
@@ -237,6 +261,9 @@ function sanitizeRoomWorld(value = {}) {
       vignetteEnabled: image.vignetteEnabled == null
         ? fallback.image.vignetteEnabled
         : !!image.vignetteEnabled,
+      vignetteMode: ['alpha', 'color'].includes(image.vignetteMode)
+        ? image.vignetteMode
+        : fallback.image.vignetteMode,
       vignetteColor: typeof image.vignetteColor === 'string'
         ? image.vignetteColor
         : fallback.image.vignetteColor,
@@ -600,11 +627,13 @@ function syncConfigFromRoomWorld(world) {
   config.revealImageOffsetX = world.image.offsetX;
   config.revealImageOffsetY = world.image.offsetY;
   config.revealVignetteEnabled = world.image.vignetteEnabled;
+  config.revealVignetteMode = world.image.vignetteMode;
   config.revealVignetteColor = world.image.vignetteColor;
   config.revealVignetteInnerOpacity = world.image.vignetteInnerOpacity;
   config.revealVignetteEdgeOpacity = world.image.vignetteEdgeOpacity;
   config.revealVignetteSize = world.image.vignetteSize;
   config.revealVignetteCurve = world.image.vignetteCurve;
+  updateRevealVignetteGuiState();
 }
 
 function clampPlayersToRoomWorld() {
@@ -652,6 +681,7 @@ function syncRoomWorldFromConfig({ geometryChanged = false } = {}) {
       offsetX: config.revealImageOffsetX,
       offsetY: config.revealImageOffsetY,
       vignetteEnabled: config.revealVignetteEnabled,
+      vignetteMode: config.revealVignetteMode,
       vignetteColor: config.revealVignetteColor,
       vignetteInnerOpacity: config.revealVignetteInnerOpacity,
       vignetteEdgeOpacity: config.revealVignetteEdgeOpacity,
@@ -1042,6 +1072,23 @@ function hexToRgb(hex) {
 function colorWithAlpha(hex, alpha) {
   const { r, g, b } = hexToRgb(hex);
   return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+}
+
+function drawBackground() {
+  const topColor = colorWithAlpha(config.backgroundGradientTopColor, config.backgroundGradientTopAlpha);
+  const bottomColor = colorWithAlpha(config.backgroundGradientBottomColor, config.backgroundGradientBottomAlpha);
+
+  if (!config.backgroundGradientEnabled) {
+    ctx.fillStyle = config.backgroundColor;
+    ctx.fillRect(0, 0, viewport.width, viewport.height);
+    return;
+  }
+
+  const gradient = ctx.createLinearGradient(0, viewport.height, 0, 0);
+  gradient.addColorStop(0, bottomColor);
+  gradient.addColorStop(1, topColor);
+  ctx.fillStyle = gradient;
+  ctx.fillRect(0, 0, viewport.width, viewport.height);
 }
 
 function getRoomWorld() {
@@ -1731,6 +1778,7 @@ function applyRevealEdgeVignette(targetCtx, width, height) {
   }
 
   const curve = Math.max(0.1, Number(imageConfig.vignetteCurve) || 1);
+  const vignetteMode = imageConfig.vignetteMode === 'color' ? 'color' : 'alpha';
   const { r, g, b } = hexToRgb(imageConfig.vignetteColor || '#000000');
   const imageData = targetCtx.getImageData(0, 0, width, height);
   const { data } = imageData;
@@ -1750,9 +1798,14 @@ function applyRevealEdgeVignette(targetCtx, width, height) {
       }
 
       const index = (y * width + x) * 4;
-      data[index] = Math.round(lerp(data[index], r, overlayAlpha));
-      data[index + 1] = Math.round(lerp(data[index + 1], g, overlayAlpha));
-      data[index + 2] = Math.round(lerp(data[index + 2], b, overlayAlpha));
+      if (vignetteMode === 'alpha') {
+        const alphaMultiplier = 1 - overlayAlpha;
+        data[index + 3] = Math.round(data[index + 3] * alphaMultiplier);
+      } else {
+        data[index] = Math.round(lerp(data[index], r, overlayAlpha));
+        data[index + 1] = Math.round(lerp(data[index + 1], g, overlayAlpha));
+        data[index + 2] = Math.round(lerp(data[index + 2], b, overlayAlpha));
+      }
     }
   }
 
@@ -2215,8 +2268,7 @@ function drawViewportDebug() {
 
 function render() {
   ctx.clearRect(0, 0, viewport.width, viewport.height);
-  ctx.fillStyle = config.backgroundColor;
-  ctx.fillRect(0, 0, viewport.width, viewport.height);
+  drawBackground();
 
   if (!config.gridOverReveal) {
     drawBaseGrid();
@@ -2337,8 +2389,17 @@ function setupGui() {
   const gui = new GUI({ title: 'Grid Controls' });
   guiInstance = gui;
 
+  const backgroundFolder = gui.addFolder('Background');
+  backgroundFolder.add(config, 'backgroundGradientEnabled').name('Enabled');
+  backgroundFolder.addColor(config, 'backgroundGradientTopColor').name('Top Color');
+  backgroundFolder.addColor(config, 'backgroundGradientBottomColor').name('Bottom Color');
+  backgroundFolder.add(config, 'backgroundGradientTopAlpha', 0, 1, 0.01).name('Top Alpha');
+  backgroundFolder.add(config, 'backgroundGradientBottomAlpha', 0, 1, 0.01).name('Bottom Alpha');
+  backgroundFolder.close();
+
   const sceneFolder = gui.addFolder('Scene');
-  sceneFolder.addColor(config, 'backgroundColor').name('Background');
+  sceneFolder.addColor(config, 'backgroundColor').name('Fallback');
+  sceneFolder.close();
 
   const gridFolder = gui.addFolder('Base Grid');
   gridFolder.add(config, 'gridSize', 40, 200, 1)
@@ -2355,6 +2416,7 @@ function setupGui() {
   gridFolder.add(config, 'gridOpacity', 0, 1, 0.01).name('Opacity');
   gridFolder.add(config, 'gridLineWidth', 1, 4, 1).name('Line Width');
   gridFolder.add(config, 'gridOverReveal').name('Over Reveal');
+  gridFolder.close();
 
   const motionFolder = gui.addFolder('Motion');
   motionFolder.add(config, 'spawnDelayMs', 0, 3000, 10).name('Spawn Delay');
@@ -2364,6 +2426,7 @@ function setupGui() {
   motionFolder.add(config, 'routePreference', ['horizontal-first', 'vertical-first', 'alternating']).name('Routing');
   motionFolder.add(config, 'turnPauseMs', 0, 500, 5).name('Turn Pause');
   motionFolder.add(config, 'segmentEasing', 0, 1, 0.01).name('Smoothing');
+  motionFolder.close();
 
   const nodeFolder = gui.addFolder('Node');
   nodeFolder.addColor(config, 'nodeColor').name('Fill');
@@ -2380,6 +2443,7 @@ function setupGui() {
   nodeFolder.add(config, 'pulseSpeed', 0, 12, 0.05).name('Pulse Speed');
   nodeFolder.add(config, 'nodeSpawnStartScale', 1, 16, 0.1).name('Spawn Start Scale');
   nodeFolder.add(config, 'nodeSpawnBounce', 0, 3, 0.05).name('Spawn Bounce');
+  nodeFolder.close();
 
   const activeEdgeFolder = gui.addFolder('Active Edges');
   activeEdgeFolder.add(config, 'activeEdgeEnabled').name('Enabled');
@@ -2393,6 +2457,7 @@ function setupGui() {
   activeEdgeFolder.add(config, 'activeEdgeGlowBlur', 0, 60, 1).name('Glow Blur');
   activeEdgeFolder.add(config, 'activeEdgeHoldMs', 0, 4000, 10).name('Hold Time');
   activeEdgeFolder.add(config, 'activeEdgeFadeMs', 50, 6000, 10).name('Fade Time');
+  activeEdgeFolder.close();
 
   const revealFolder = gui.addFolder('Reveal');
   revealFolder.add(config, 'revealEnabled').name('Enabled');
@@ -2417,7 +2482,7 @@ revealFolder.add(config, 'revealImageOffsetX', -4000, 4000, 1)
     syncRoomWorldFromConfig();
   });
 
-revealFolder.add(config, 'revealImageOffsetY', -4000, 4000, 1)
+  revealFolder.add(config, 'revealImageOffsetY', -4000, 4000, 1)
   .name('Image Offset Y')
   .onChange(() => {
     syncRoomWorldFromConfig();
@@ -2428,7 +2493,13 @@ revealFolder.add(config, 'revealImageOffsetY', -4000, 4000, 1)
     .onChange(() => {
       syncRoomWorldFromConfig();
     });
-  revealFolder.addColor(config, 'revealVignetteColor')
+  revealFolder.add(config, 'revealVignetteMode', ['alpha', 'color'])
+    .name('Vignette Mode')
+    .onChange(() => {
+      updateRevealVignetteGuiState();
+      syncRoomWorldFromConfig();
+    });
+  guiControllers.revealVignetteColor = revealFolder.addColor(config, 'revealVignetteColor')
     .name('Vignette Color')
     .onChange(() => {
       syncRoomWorldFromConfig();
@@ -2467,6 +2538,7 @@ revealFolder.add(config, 'revealImageOffsetY', -4000, 4000, 1)
   revealFolder.add(config, 'revealImageOpacity', 0, 1, 0.01).name('Image Alpha');
   revealFolder.addColor(config, 'revealTintColor').name('Tint');
   revealFolder.add(config, 'revealTintOpacity', 0, 1, 0.01).name('Tint Alpha');
+  revealFolder.close();
 
   const debugFolder = gui.addFolder('Debug');
   debugFolder.add(config, 'showTarget').name('Target');
@@ -2474,6 +2546,9 @@ revealFolder.add(config, 'revealImageOffsetY', -4000, 4000, 1)
   debugFolder.add(config, 'showRevealCells').name('Reveal Cells');
   debugFolder.add(config, 'showPlayerIds').name('Player IDs');
   debugFolder.add(config, 'showViewportDebug').name('Viewport Metrics');
+  debugFolder.close();
+
+  updateRevealVignetteGuiState();
 
   const networkFolder = gui.addFolder('Network');
   networkFolder.add(config, 'networkEnabled').name('Enabled').onChange((value) => {
@@ -2494,6 +2569,7 @@ revealFolder.add(config, 'revealImageOffsetY', -4000, 4000, 1)
   networkFolder.add(networkInfo, 'roomId').name('Room').listen();
   networkFolder.add(networkInfo, 'players').name('Players').listen();
   networkFolder.add(networkInfo, 'shareUrl').name('Share WS').listen();
+  networkFolder.close();
 
   const utilitiesFolder = gui.addFolder('Utilities');
   utilitiesFolder.add(actions, 'clearActiveEdges').name('Clear Active Edges');
@@ -2505,6 +2581,7 @@ revealFolder.add(config, 'revealImageOffsetY', -4000, 4000, 1)
   utilitiesFolder.add(actions, 'clearDebugPlayers').name('Clear Debug Players');
   utilitiesFolder.add(actions, 'reloadRevealImage').name('Reload Reveal Image');
   utilitiesFolder.add(actions, 'copyConfig').name('Copy Config');
+  utilitiesFolder.close();
 
   gui.close();
   applyGuiLayout(gui);

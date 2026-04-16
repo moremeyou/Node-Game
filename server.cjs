@@ -26,6 +26,7 @@ const DEFAULT_ROOM_WORLD = Object.freeze({
     offsetX: 0,
     offsetY: 0,
     vignetteEnabled: true,
+    vignetteMode: 'alpha',
     vignetteColor: '#000000',
     vignetteInnerOpacity: 0,
     vignetteEdgeOpacity: 1,
