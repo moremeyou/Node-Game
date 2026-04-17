@@ -22,6 +22,7 @@ Current features include:
 - works on desktop (mouse movement) and mobile (tap around the grid)
 - active edge glow/trails
 - hidden image reveal by cell
+- local enclosed-shape / held-cell prototype driven from shared active edges
 - auto-matched multiplayer rooms
 - max 5 players per room
 - lil-gui controls for tuning visuals and behavior
@@ -123,9 +124,12 @@ The prototype includes controls for:
 - base grid
 - node visuals
 - active edge visuals
+- buffs
 - reveal behavior
+- enclosure / held-cell behavior
 - hidden image placement / fit / scale
 - network status
+- config copy / paste for fast tuning snapshots
 
 Current reveal image behavior supports:
 - `native`
@@ -176,7 +180,40 @@ http://YOUR-IP:5173
 - Known mobile browser note:
 	- Safari mobile landscape can render the full available width.
 	- Chrome mobile landscape appears to reserve non-drawable left/right browser areas; the page fills Chrome's reported viewport, but Chrome does not expose those side bands to canvas content in a normal tab.
-- Next design focus:
-	- Prototype the cooperative enclosed-shape mechanic locally.
-	- Once the feel is right, move held/revealed shape state toward server ownership.
-	- Later, add stricter server authority/rate limiting before public use.
+
+## Today's Update
+
+Today I moved the prototype into the first real enclosed-shape exploration phase.
+
+What I added:
+- a local/client-derived enclosed-region detector based on the shared active-edge field
+- a held-cell layer with its own opacity / hold / fade controls
+- contributor-count and enclosed-area gating so I can test solo vs cooperative closure rules
+- config copy / paste in lil-gui so I can save and restore tuning snapshots without editing code
+- a first `Buffs` section with `Trail Length Buff`
+- a debug overlay that shows live trail-buff values:
+	- player count used for the calculation
+	- base active-edge hold time
+	- per-player buff amount
+	- live multiplier
+	- effective hold time after buffing
+
+Current buff behavior:
+- `Trail Length Buff` currently affects `Active Edge Hold` only
+- it is multiplied by the number of players in the room beyond the first, so solo play keeps the base hold time intact
+- this is intentionally narrow for now so I can feel the mechanic before I turn `Trail Length` into a broader top-level property
+
+## Next Steps I'm Thinking About
+
+Near-term:
+- keep tuning enclosure feel locally:
+	- trail lifetime
+	- enclosure threshold
+	- held-cell fade / hold behavior
+	- solo vs multiplayer contributor rules
+- decide whether a future top-level `Trail Length` property should also drive `Active Edge Fade`
+- decide whether the enclosure mechanic eventually needs its own mechanical trail memory, separate from visible active-edge life
+
+Later:
+- once the cooperative shape mechanic feels right, move held/enclosed state toward server ownership
+- after the mechanic settles, tighten server authority / validation / anti-spam hardening

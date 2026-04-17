@@ -144,6 +144,7 @@ const config = {
   activeEdgeGlowBlur: 32,
   activeEdgeHoldMs: 90,
   activeEdgeFadeMs: 670,
+  trailLengthBuff: 0,
   revealEnabled: true,
   revealImageSrc: "/teaser-hidden.jpg",
   revealImageFitMode: 'native',
@@ -170,10 +171,27 @@ const config = {
   revealImageOpacity: 1,
   revealTintColor: "#000000",
   revealTintOpacity: 0.14,
+  enclosureEnabled: true,
+  enclosureIncludeCurrentSegment: false,
+  enclosureEdgeActiveThreshold: 0.55,
+  enclosureMinCells: 1,
+  enclosureMaxCells: 2000,
+  enclosureMinContributors: 1,
+  heldCellOpacity: 0.72,
+  heldCellContributorOpacityBonus: 0.14,
+  heldCellFadeInMs: 120,
+  heldCellHoldMs: 600,
+  heldCellContributorHoldBonusMs: 400,
+  heldCellFadeOutMs: 1200,
+  heldCellImageOpacity: 1,
+  heldCellTintColor: "#7eb6ff",
+  heldCellTintOpacity: 0.12,
   gridOverReveal: true,
   showTarget: false,
   showIntersections: true,
   showRevealCells: false,
+  showHeldCells: false,
+  showTrailBuffOverlay: true,
   showPlayerIds: false,
   showViewportDebug: false,
   networkEnabled: true,
@@ -303,6 +321,7 @@ const state = {
   players: new Map(),
   activeEdges: new Map(),
   revealCells: new Map(),
+  heldCells: new Map(),
   room: {
     world: createDefaultRoomWorld(),
   },
@@ -345,12 +364,199 @@ const networkInfo = {
   shareUrl: '-',
 };
 
+function buildConfigSnapshot() {
+  const lines = ['const config = {'];
+
+  for (const [key, value] of Object.entries(config)) {
+    const formattedValue =
+      typeof value === 'string' ? JSON.stringify(value) : String(value);
+    lines.push(`  ${key}: ${formattedValue},`);
+  }
+
+  lines.push('};');
+  return lines.join('\n');
+}
+
+async function copyTextToClipboard(text) {
+  if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+    try {
+      await navigator.clipboard.writeText(text);
+      return true;
+    } catch (error) {
+      // Fall through to legacy copy behavior.
+    }
+  }
+
+  const textarea = document.createElement('textarea');
+  textarea.value = text;
+  textarea.setAttribute('readonly', '');
+  textarea.style.position = 'fixed';
+  textarea.style.opacity = '0';
+  textarea.style.pointerEvents = 'none';
+  textarea.style.left = '-9999px';
+  textarea.style.top = '0';
+
+  document.body.appendChild(textarea);
+  textarea.focus();
+  textarea.select();
+  textarea.setSelectionRange(0, text.length);
+
+  let copied = false;
+  try {
+    copied = document.execCommand('copy');
+  } catch (error) {
+    copied = false;
+  }
+
+  document.body.removeChild(textarea);
+  return copied;
+}
+
+async function readTextFromClipboard() {
+  if (navigator.clipboard && typeof navigator.clipboard.readText === 'function') {
+    try {
+      const text = await navigator.clipboard.readText();
+      if (text) {
+        return text;
+      }
+    } catch (error) {
+      // Fall through to manual paste prompt.
+    }
+  }
+
+  const manualText = window.prompt('Paste a copied config snapshot here:', '');
+  return typeof manualText === 'string' ? manualText : null;
+}
+
+function parseConfigSnapshot(text) {
+  const rawText = String(text || '').trim();
+  if (!rawText) {
+    return null;
+  }
+
+  const objectMatch = rawText.match(/const\s+config\s*=\s*(\{[\s\S]*\})\s*;?\s*$/);
+  const objectSource = objectMatch ? objectMatch[1] : rawText;
+
+  try {
+    const parsed = Function('"use strict"; return (' + objectSource + ');')();
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return null;
+    }
+
+    return parsed;
+  } catch (error) {
+    return null;
+  }
+}
+
+function refreshGuiDisplay() {
+  if (!guiInstance || typeof guiInstance.controllersRecursive !== 'function') {
+    return;
+  }
+
+  for (const controller of guiInstance.controllersRecursive()) {
+    controller.updateDisplay();
+  }
+}
+
+function applyConfigSnapshot(snapshot) {
+  if (!snapshot || typeof snapshot !== 'object' || Array.isArray(snapshot)) {
+    return 0;
+  }
+
+  const previousConfig = { ...config };
+  let appliedCount = 0;
+
+  for (const key of Object.keys(config)) {
+    if (!Object.prototype.hasOwnProperty.call(snapshot, key)) {
+      continue;
+    }
+
+    const currentValue = config[key];
+    const incomingValue = snapshot[key];
+    let nextValue = currentValue;
+
+    if (typeof currentValue === 'number') {
+      const numericValue = Number(incomingValue);
+      if (!Number.isFinite(numericValue)) {
+        continue;
+      }
+      nextValue = numericValue;
+    } else if (typeof currentValue === 'boolean') {
+      nextValue = typeof incomingValue === 'boolean'
+        ? incomingValue
+        : String(incomingValue).trim().toLowerCase() === 'true';
+    } else if (typeof currentValue === 'string') {
+      nextValue = String(incomingValue);
+    } else {
+      continue;
+    }
+
+    if (Object.is(currentValue, nextValue)) {
+      continue;
+    }
+
+    config[key] = nextValue;
+    appliedCount += 1;
+  }
+
+  if (appliedCount <= 0) {
+    updateRevealVignetteGuiState();
+    refreshGuiDisplay();
+    return 0;
+  }
+
+  updateRevealVignetteGuiState();
+
+  const geometryChanged = previousConfig.gridSize !== config.gridSize
+    || previousConfig.minCellScreenPx !== config.minCellScreenPx;
+  const roomWorldChanged = geometryChanged
+    || previousConfig.revealImageFitMode !== config.revealImageFitMode
+    || previousConfig.revealImageScale !== config.revealImageScale
+    || previousConfig.revealImageOffsetX !== config.revealImageOffsetX
+    || previousConfig.revealImageOffsetY !== config.revealImageOffsetY
+    || previousConfig.revealVignetteEnabled !== config.revealVignetteEnabled
+    || previousConfig.revealVignetteMode !== config.revealVignetteMode
+    || previousConfig.revealVignetteColor !== config.revealVignetteColor
+    || previousConfig.revealVignetteInnerOpacity !== config.revealVignetteInnerOpacity
+    || previousConfig.revealVignetteEdgeOpacity !== config.revealVignetteEdgeOpacity
+    || previousConfig.revealVignetteSize !== config.revealVignetteSize
+    || previousConfig.revealVignetteCurve !== config.revealVignetteCurve;
+  const revealImageChanged = previousConfig.revealImageSrc !== config.revealImageSrc;
+  const networkChanged = previousConfig.networkEnabled !== config.networkEnabled
+    || previousConfig.networkUrl !== config.networkUrl;
+
+  if (roomWorldChanged) {
+    syncRoomWorldFromConfig({ geometryChanged });
+  } else if (state.pointer.active) {
+    refreshPointerTargetFromStoredPointer();
+  }
+
+  if (revealImageChanged) {
+    loadRevealImage();
+  }
+
+  if (networkChanged) {
+    if (config.networkEnabled) {
+      connectNetwork({ force: true });
+    } else {
+      disconnectNetwork({ manual: true });
+    }
+  }
+
+  refreshGuiDisplay();
+  return appliedCount;
+}
+
 const actions = {
   clearActiveEdges() {
     state.activeEdges.clear();
   },
   clearRevealCells() {
     state.revealCells.clear();
+  },
+  clearHeldCells() {
+    state.heldCells.clear();
   },
   randomizeSpawn() {
     const player = getLocalPlayer();
@@ -401,23 +607,35 @@ const actions = {
     disconnectNetwork({ manual: true });
   },
   async copyConfig() {
-    const lines = ['const config = {'];
+    const snapshot = buildConfigSnapshot();
+    const copied = await copyTextToClipboard(snapshot);
 
-    for (const [key, value] of Object.entries(config)) {
-      const formattedValue =
-        typeof value === 'string' ? JSON.stringify(value) : String(value);
-      lines.push(`  ${key}: ${formattedValue},`);
-    }
-
-    lines.push('};');
-    const snapshot = lines.join('\n');
-
-    try {
-      await navigator.clipboard.writeText(snapshot);
+    if (copied) {
       console.info('Config copied to clipboard.');
-    } catch (error) {
-      console.warn('Clipboard unavailable. Here is the config:', snapshot);
+      return;
     }
+
+    window.prompt('Copy config snapshot:', snapshot);
+  },
+  async pasteConfig() {
+    const snapshotText = await readTextFromClipboard();
+    if (snapshotText == null) {
+      return;
+    }
+
+    const parsedSnapshot = parseConfigSnapshot(snapshotText);
+    if (!parsedSnapshot) {
+      window.alert('Could not parse config snapshot from clipboard.');
+      return;
+    }
+
+    const appliedCount = applyConfigSnapshot(parsedSnapshot);
+    if (appliedCount > 0) {
+      console.info(`Applied ${appliedCount} config values from snapshot.`);
+      return;
+    }
+
+    console.info('No config values changed from pasted snapshot.');
   },
 };
 
@@ -524,6 +742,20 @@ function updateNetworkInfo() {
     }
   }
   networkInfo.players = Math.max(1, players);
+}
+
+function getEffectiveRoomPlayerCount() {
+  if (state.network.roomId) {
+    return Math.max(1, Math.round(state.network.playerCount || 1));
+  }
+
+  return Math.max(1, state.players.size);
+}
+
+function getTrailLengthMultiplier() {
+  const playerCount = getEffectiveRoomPlayerCount();
+  const perExtraPlayerBuff = Math.max(0, Number(config.trailLengthBuff) || 0);
+  return 1 + perExtraPlayerBuff * Math.max(0, playerCount - 1);
 }
 
 function setNetworkStatus(status) {
@@ -1282,7 +1514,7 @@ function touchActiveEdge(sourceId, start, end, touchedAt = state.now) {
 }
 
 function getActiveEdgeSourceAlphaMultiplier(source) {
-  const hold = Math.max(0, config.activeEdgeHoldMs);
+  const hold = Math.max(0, config.activeEdgeHoldMs * getTrailLengthMultiplier());
   const fade = Math.max(1, config.activeEdgeFadeMs);
   const age = state.now - source.lastTouchedAt;
   const fadeProgress = age <= hold ? 0 : clamp((age - hold) / fade, 0, 1);
@@ -1534,6 +1766,60 @@ function buildActiveEdgeStrengthMap() {
   return strengths;
 }
 
+function buildEdgeActivitySnapshot({ includeCurrentSegment = false } = {}) {
+  const snapshot = new Map();
+
+  function touchSnapshotEntry(key, strength, sourceIds) {
+    if (strength <= 0) {
+      return;
+    }
+
+    let entry = snapshot.get(key);
+    if (!entry) {
+      entry = {
+        strength: 0,
+        sourceIds: new Set(),
+      };
+      snapshot.set(key, entry);
+    }
+
+    entry.strength = Math.max(entry.strength, strength);
+
+    for (const sourceId of sourceIds) {
+      entry.sourceIds.add(sourceId);
+    }
+  }
+
+  for (const [key, edge] of state.activeEdges.entries()) {
+    const strength = getActiveEdgeAlphaMultiplier(edge);
+    if (strength <= 0) {
+      continue;
+    }
+
+    touchSnapshotEntry(key, strength, edge.sources.keys());
+  }
+
+  if (!includeCurrentSegment) {
+    return snapshot;
+  }
+
+  for (const player of getRenderablePlayers()) {
+    if (!player.segment) {
+      continue;
+    }
+
+    const key = createSegmentKey(
+      player.segment.startIntersection,
+      player.segment.endIntersection,
+    );
+    const strength = clamp(player.segment.progress, 0, 1);
+
+    touchSnapshotEntry(key, strength, [player.id]);
+  }
+
+  return snapshot;
+}
+
 function getCellBorderSegmentKeys(cell) {
   const topLeft = { col: cell.col, row: cell.row };
   const topRight = { col: cell.col + 1, row: cell.row };
@@ -1546,6 +1832,340 @@ function getCellBorderSegmentKeys(cell) {
     bottom: createSegmentKey(bottomLeft, bottomRight),
     left: createSegmentKey(topLeft, bottomLeft),
   };
+}
+
+function getBarrierSegmentKeyBetweenCells(aCol, aRow, bCol, bRow, cols, rows) {
+  const deltaCol = bCol - aCol;
+  const deltaRow = bRow - aRow;
+
+  if (Math.abs(deltaCol) + Math.abs(deltaRow) !== 1) {
+    return null;
+  }
+
+  if (deltaCol !== 0) {
+    const borderCol = Math.max(aCol, bCol);
+    const row = aRow;
+
+    if (row < 0 || row >= rows || borderCol < 0 || borderCol > cols) {
+      return null;
+    }
+
+    return createSegmentKey(
+      { col: borderCol, row },
+      { col: borderCol, row: row + 1 },
+    );
+  }
+
+  const borderRow = Math.max(aRow, bRow);
+  const col = aCol;
+
+  if (col < 0 || col >= cols || borderRow < 0 || borderRow > rows) {
+    return null;
+  }
+
+  return createSegmentKey(
+    { col, row: borderRow },
+    { col: col + 1, row: borderRow },
+  );
+}
+
+function buildEnclosedRegions() {
+  const cols = cellCountX();
+  const rows = cellCountY();
+  if (cols <= 0 || rows <= 0) {
+    return [];
+  }
+
+  const edgeSnapshot = buildEdgeActivitySnapshot({
+    includeCurrentSegment: config.enclosureIncludeCurrentSegment,
+  });
+  const barrierThreshold = clamp(config.enclosureEdgeActiveThreshold, 0, 1);
+  const barrierEntries = new Map();
+
+  for (const [key, entry] of edgeSnapshot.entries()) {
+    if (entry.strength >= barrierThreshold) {
+      barrierEntries.set(key, entry);
+    }
+  }
+
+  const expandedCols = cols + 2;
+  const expandedRows = rows + 2;
+  const outsideReachable = new Uint8Array(expandedCols * expandedRows);
+  const regionVisited = new Uint8Array(cols * rows);
+  const directions = [
+    { col: 1, row: 0 },
+    { col: -1, row: 0 },
+    { col: 0, row: 1 },
+    { col: 0, row: -1 },
+  ];
+
+  function expandedIndex(expandedCol, expandedRow) {
+    return expandedRow * expandedCols + expandedCol;
+  }
+
+  function roomIndex(col, row) {
+    return row * cols + col;
+  }
+
+  const outsideQueue = [{ col: 0, row: 0 }];
+  outsideReachable[expandedIndex(0, 0)] = 1;
+
+  while (outsideQueue.length > 0) {
+    const cell = outsideQueue.shift();
+    const logicalCol = cell.col - 1;
+    const logicalRow = cell.row - 1;
+
+    for (const direction of directions) {
+      const nextExpandedCol = cell.col + direction.col;
+      const nextExpandedRow = cell.row + direction.row;
+
+      if (
+        nextExpandedCol < 0
+        || nextExpandedCol >= expandedCols
+        || nextExpandedRow < 0
+        || nextExpandedRow >= expandedRows
+      ) {
+        continue;
+      }
+
+      const nextIndex = expandedIndex(nextExpandedCol, nextExpandedRow);
+      if (outsideReachable[nextIndex]) {
+        continue;
+      }
+
+      const nextLogicalCol = nextExpandedCol - 1;
+      const nextLogicalRow = nextExpandedRow - 1;
+      const barrierKey = getBarrierSegmentKeyBetweenCells(
+        logicalCol,
+        logicalRow,
+        nextLogicalCol,
+        nextLogicalRow,
+        cols,
+        rows,
+      );
+
+      if (barrierKey && barrierEntries.has(barrierKey)) {
+        continue;
+      }
+
+      outsideReachable[nextIndex] = 1;
+      outsideQueue.push({
+        col: nextExpandedCol,
+        row: nextExpandedRow,
+      });
+    }
+  }
+
+  const regions = [];
+
+  for (let row = 0; row < rows; row += 1) {
+    for (let col = 0; col < cols; col += 1) {
+      const roomCellIndex = roomIndex(col, row);
+      const expandedCellIndex = expandedIndex(col + 1, row + 1);
+
+      if (regionVisited[roomCellIndex] || outsideReachable[expandedCellIndex]) {
+        continue;
+      }
+
+      const regionQueue = [{ col, row }];
+      const regionCells = [];
+      const regionCellKeys = new Set();
+      regionVisited[roomCellIndex] = 1;
+
+      while (regionQueue.length > 0) {
+        const current = regionQueue.shift();
+        const currentKey = createCellKey(current);
+        regionCells.push(current);
+        regionCellKeys.add(currentKey);
+
+        for (const direction of directions) {
+          const nextCol = current.col + direction.col;
+          const nextRow = current.row + direction.row;
+
+          if (nextCol < 0 || nextCol >= cols || nextRow < 0 || nextRow >= rows) {
+            continue;
+          }
+
+          const barrierKey = getBarrierSegmentKeyBetweenCells(
+            current.col,
+            current.row,
+            nextCol,
+            nextRow,
+            cols,
+            rows,
+          );
+
+          if (barrierKey && barrierEntries.has(barrierKey)) {
+            continue;
+          }
+
+          const nextRoomIndex = roomIndex(nextCol, nextRow);
+          if (regionVisited[nextRoomIndex]) {
+            continue;
+          }
+
+          regionVisited[nextRoomIndex] = 1;
+          regionQueue.push({ col: nextCol, row: nextRow });
+        }
+      }
+
+      const boundaryEdgeKeys = new Set();
+      const contributorIds = new Set();
+
+      for (const cell of regionCells) {
+        for (const direction of directions) {
+          const nextCol = cell.col + direction.col;
+          const nextRow = cell.row + direction.row;
+          const barrierKey = getBarrierSegmentKeyBetweenCells(
+            cell.col,
+            cell.row,
+            nextCol,
+            nextRow,
+            cols,
+            rows,
+          );
+
+          if (!barrierKey || !barrierEntries.has(barrierKey)) {
+            continue;
+          }
+
+          if (
+            nextCol >= 0
+            && nextCol < cols
+            && nextRow >= 0
+            && nextRow < rows
+            && regionCellKeys.has(createCellKey({ col: nextCol, row: nextRow }))
+          ) {
+            continue;
+          }
+
+          boundaryEdgeKeys.add(barrierKey);
+
+          for (const contributorId of barrierEntries.get(barrierKey).sourceIds) {
+            contributorIds.add(contributorId);
+          }
+        }
+      }
+
+      if (boundaryEdgeKeys.size === 0) {
+        continue;
+      }
+
+      regions.push({
+        cells: regionCells,
+        areaCellCount: regionCells.length,
+        boundaryEdgeCount: boundaryEdgeKeys.size,
+        contributorCount: contributorIds.size,
+      });
+    }
+  }
+
+  return regions;
+}
+
+function getHeldCellTargetAlpha(contributorCount) {
+  const contributorBonus = Math.max(0, contributorCount - 1)
+    * Math.max(0, config.heldCellContributorOpacityBonus);
+  return clamp(config.heldCellOpacity + contributorBonus, 0, 1);
+}
+
+function updateHeldCells(deltaSeconds) {
+  if (!config.enclosureEnabled) {
+    state.heldCells.clear();
+    return;
+  }
+
+  const activeCells = new Map();
+  const minCells = Math.max(1, Math.round(config.enclosureMinCells));
+  const maxCells = Math.max(minCells, Math.round(config.enclosureMaxCells));
+  const minContributors = Math.max(1, Math.round(config.enclosureMinContributors));
+
+  for (const region of buildEnclosedRegions()) {
+    if (region.areaCellCount < minCells || region.areaCellCount > maxCells) {
+      continue;
+    }
+
+    if (region.contributorCount < minContributors) {
+      continue;
+    }
+
+    const targetAlpha = getHeldCellTargetAlpha(region.contributorCount);
+    const holdMs = Math.max(
+      0,
+      config.heldCellHoldMs
+        + Math.max(0, region.contributorCount - 1) * config.heldCellContributorHoldBonusMs,
+    );
+
+    for (const cell of region.cells) {
+      const key = createCellKey(cell);
+      activeCells.set(key, {
+        cell: { ...cell },
+        targetAlpha,
+        holdMs,
+        contributorCount: region.contributorCount,
+        areaCellCount: region.areaCellCount,
+        boundaryEdgeCount: region.boundaryEdgeCount,
+      });
+    }
+  }
+
+  const deltaMs = deltaSeconds * 1000;
+  const seenKeys = new Set();
+
+  for (const [key, activeCell] of activeCells.entries()) {
+    seenKeys.add(key);
+    let entry = state.heldCells.get(key);
+
+    if (!entry) {
+      entry = {
+        cell: { ...activeCell.cell },
+        alpha: 0,
+        targetAlpha: 0,
+        holdMs: activeCell.holdMs,
+        lastActiveAt: state.now,
+        contributorCount: activeCell.contributorCount,
+        areaCellCount: activeCell.areaCellCount,
+        boundaryEdgeCount: activeCell.boundaryEdgeCount,
+      };
+    }
+
+    const responseMs = activeCell.targetAlpha >= entry.alpha
+      ? Math.max(0, config.heldCellFadeInMs)
+      : Math.max(1, config.heldCellFadeOutMs);
+    const step = responseMs <= 0 ? 1 : clamp(deltaMs / responseMs, 0, 1);
+
+    entry.alpha = lerp(entry.alpha, activeCell.targetAlpha, step);
+    entry.targetAlpha = activeCell.targetAlpha;
+    entry.holdMs = activeCell.holdMs;
+    entry.lastActiveAt = state.now;
+    entry.contributorCount = activeCell.contributorCount;
+    entry.areaCellCount = activeCell.areaCellCount;
+    entry.boundaryEdgeCount = activeCell.boundaryEdgeCount;
+    state.heldCells.set(key, entry);
+  }
+
+  for (const [key, entry] of state.heldCells.entries()) {
+    if (seenKeys.has(key)) {
+      continue;
+    }
+
+    let targetAlpha = 0;
+    if (state.now - entry.lastActiveAt < entry.holdMs) {
+      targetAlpha = entry.alpha;
+    }
+
+    const responseMs = targetAlpha >= entry.alpha
+      ? Math.max(0, config.heldCellFadeInMs)
+      : Math.max(1, config.heldCellFadeOutMs);
+    const step = responseMs <= 0 ? 1 : clamp(deltaMs / responseMs, 0, 1);
+
+    entry.alpha = lerp(entry.alpha, targetAlpha, step);
+    entry.targetAlpha = targetAlpha;
+
+    if (entry.alpha <= 0.001 && entry.targetAlpha <= 0.001) {
+      state.heldCells.delete(key);
+    }
+  }
 }
 
 function getRevealOpacityForEffectiveEdgeCount(effectiveEdgeCount, fullyClosed) {
@@ -1959,6 +2579,48 @@ function drawRevealCells() {
   }
 }
 
+function drawHeldCells() {
+  if (!config.enclosureEnabled) {
+    return;
+  }
+
+  for (const entry of state.heldCells.values()) {
+    const alpha = clamp(entry.alpha || 0, 0, 1);
+    if (alpha <= 0) {
+      continue;
+    }
+
+    const rect = getCellRect(entry.cell);
+    if (rect.width <= 0 || rect.height <= 0) {
+      continue;
+    }
+
+    const screenRect = worldRectToScreenRect(rect);
+
+    ctx.save();
+    ctx.globalAlpha = alpha * config.heldCellImageOpacity;
+    ctx.drawImage(
+      revealSourceCanvas,
+      rect.x,
+      rect.y,
+      rect.width,
+      rect.height,
+      screenRect.x,
+      screenRect.y,
+      screenRect.width,
+      screenRect.height,
+    );
+    ctx.restore();
+
+    if (config.heldCellTintOpacity > 0) {
+      ctx.save();
+      ctx.fillStyle = colorWithAlpha(config.heldCellTintColor, alpha * config.heldCellTintOpacity);
+      ctx.fillRect(screenRect.x, screenRect.y, screenRect.width, screenRect.height);
+      ctx.restore();
+    }
+  }
+}
+
 function drawRevealCellDebug() {
   if (!config.showRevealCells) {
     return;
@@ -1990,6 +2652,45 @@ function drawRevealCellDebug() {
     ctx.textBaseline = 'middle';
     ctx.fillText(
       String(entry.activeEdgeCount),
+      screenRect.x + screenRect.width * 0.5,
+      screenRect.y + screenRect.height * 0.5,
+    );
+  }
+
+  ctx.restore();
+}
+
+function drawHeldCellDebug() {
+  if (!config.showHeldCells) {
+    return;
+  }
+
+  ctx.save();
+
+  for (const entry of state.heldCells.values()) {
+    const alpha = clamp(entry.alpha || 0, 0, 1);
+    if (alpha <= 0) {
+      continue;
+    }
+
+    const rect = getCellRect(entry.cell);
+    const screenRect = worldRectToScreenRect(rect);
+
+    ctx.strokeStyle = `rgba(126, 182, 255, ${0.24 + alpha * 0.56})`;
+    ctx.lineWidth = 1;
+    ctx.strokeRect(
+      screenRect.x + 0.5,
+      screenRect.y + 0.5,
+      Math.max(0, screenRect.width - 1),
+      Math.max(0, screenRect.height - 1),
+    );
+
+    ctx.fillStyle = `rgba(255, 255, 255, ${0.2 + alpha * 0.48})`;
+    ctx.font = '10px monospace';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(
+      `${entry.contributorCount}:${entry.areaCellCount}`,
       screenRect.x + screenRect.width * 0.5,
       screenRect.y + screenRect.height * 0.5,
     );
@@ -2266,6 +2967,49 @@ function drawViewportDebug() {
   ctx.restore();
 }
 
+function drawTrailBuffOverlay() {
+  if (!config.showTrailBuffOverlay) {
+    return;
+  }
+
+  const playerCount = getEffectiveRoomPlayerCount();
+  const multiplier = getTrailLengthMultiplier();
+  const effectiveHoldMs = Math.max(0, config.activeEdgeHoldMs * multiplier);
+  const sourceLabel = state.network.roomId ? 'room' : 'local';
+  const lines = [
+    'trail buff',
+    `players ${playerCount} (${sourceLabel})`,
+    `hold base ${formatMetric(config.activeEdgeHoldMs)}ms`,
+    `buff/player ${formatMetric(config.trailLengthBuff)}`,
+    `mult ${formatMetric(multiplier)}x`,
+    `hold live ${formatMetric(effectiveHoldMs)}ms`,
+  ];
+
+  const padding = 8;
+  const lineHeight = 13;
+  const width = 190;
+  const height = padding * 2 + lines.length * lineHeight;
+  const x = 8;
+  const y = Math.max(8, viewport.height - height - 8);
+
+  ctx.save();
+  ctx.fillStyle = 'rgba(0, 0, 0, 0.78)';
+  ctx.fillRect(x, y, width, height);
+  ctx.strokeStyle = 'rgba(255, 255, 255, 0.22)';
+  ctx.lineWidth = 1;
+  ctx.strokeRect(x + 0.5, y + 0.5, width - 1, height - 1);
+  ctx.fillStyle = 'rgba(255, 255, 255, 0.88)';
+  ctx.font = '11px monospace';
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'top';
+
+  for (let index = 0; index < lines.length; index += 1) {
+    ctx.fillText(lines[index], x + padding, y + padding + index * lineHeight);
+  }
+
+  ctx.restore();
+}
+
 function render() {
   ctx.clearRect(0, 0, viewport.width, viewport.height);
   drawBackground();
@@ -2275,6 +3019,7 @@ function render() {
   }
 
   drawRevealCells();
+  drawHeldCells();
 
   if (config.gridOverReveal) {
     drawBaseGrid();
@@ -2283,9 +3028,11 @@ function render() {
   drawActiveEdges();
   drawActiveSegments();
   drawRevealCellDebug();
+  drawHeldCellDebug();
   drawDebugIntersections();
   drawDebugTarget();
   drawNodes();
+  drawTrailBuffOverlay();
   drawViewportDebug();
 }
 
@@ -2380,6 +3127,7 @@ function animate(now) {
   sendLocalPlayerState();
   clearExpiredActiveEdges();
   updateRevealCells(deltaSeconds);
+  updateHeldCells(deltaSeconds);
   render();
 
   requestAnimationFrame(animate);
@@ -2458,6 +3206,10 @@ function setupGui() {
   activeEdgeFolder.add(config, 'activeEdgeHoldMs', 0, 4000, 10).name('Hold Time');
   activeEdgeFolder.add(config, 'activeEdgeFadeMs', 50, 6000, 10).name('Fade Time');
   activeEdgeFolder.close();
+
+  const buffsFolder = gui.addFolder('Buffs');
+  buffsFolder.add(config, 'trailLengthBuff', 0, 4, 0.01).name('Trail Length Buff');
+  buffsFolder.close();
 
   const revealFolder = gui.addFolder('Reveal');
   revealFolder.add(config, 'revealEnabled').name('Enabled');
@@ -2540,10 +3292,30 @@ revealFolder.add(config, 'revealImageOffsetX', -4000, 4000, 1)
   revealFolder.add(config, 'revealTintOpacity', 0, 1, 0.01).name('Tint Alpha');
   revealFolder.close();
 
+  const enclosureFolder = gui.addFolder('Enclosure');
+  enclosureFolder.add(config, 'enclosureEnabled').name('Enabled');
+  enclosureFolder.add(config, 'enclosureIncludeCurrentSegment').name('Live Segment');
+  enclosureFolder.add(config, 'enclosureEdgeActiveThreshold', 0, 1, 0.01).name('Edge Threshold');
+  enclosureFolder.add(config, 'enclosureMinCells', 1, 200, 1).name('Min Cells');
+  enclosureFolder.add(config, 'enclosureMaxCells', 1, 2000, 1).name('Max Cells');
+  enclosureFolder.add(config, 'enclosureMinContributors', 1, 5, 1).name('Min Players');
+  enclosureFolder.add(config, 'heldCellOpacity', 0, 1, 0.01).name('Held Alpha');
+  enclosureFolder.add(config, 'heldCellContributorOpacityBonus', 0, 0.5, 0.01).name('Player Alpha+');
+  enclosureFolder.add(config, 'heldCellFadeInMs', 0, 2000, 10).name('Fade In');
+  enclosureFolder.add(config, 'heldCellHoldMs', 0, 4000, 10).name('Hold Time');
+  enclosureFolder.add(config, 'heldCellContributorHoldBonusMs', 0, 4000, 10).name('Player Hold+');
+  enclosureFolder.add(config, 'heldCellFadeOutMs', 0, 6000, 10).name('Fade Out');
+  enclosureFolder.add(config, 'heldCellImageOpacity', 0, 1, 0.01).name('Image Alpha');
+  enclosureFolder.addColor(config, 'heldCellTintColor').name('Tint');
+  enclosureFolder.add(config, 'heldCellTintOpacity', 0, 1, 0.01).name('Tint Alpha');
+  enclosureFolder.close();
+
   const debugFolder = gui.addFolder('Debug');
   debugFolder.add(config, 'showTarget').name('Target');
   debugFolder.add(config, 'showIntersections').name('Intersections');
   debugFolder.add(config, 'showRevealCells').name('Reveal Cells');
+  debugFolder.add(config, 'showHeldCells').name('Held Cells');
+  debugFolder.add(config, 'showTrailBuffOverlay').name('Trail Buff');
   debugFolder.add(config, 'showPlayerIds').name('Player IDs');
   debugFolder.add(config, 'showViewportDebug').name('Viewport Metrics');
   debugFolder.close();
@@ -2574,6 +3346,7 @@ revealFolder.add(config, 'revealImageOffsetX', -4000, 4000, 1)
   const utilitiesFolder = gui.addFolder('Utilities');
   utilitiesFolder.add(actions, 'clearActiveEdges').name('Clear Active Edges');
   utilitiesFolder.add(actions, 'clearRevealCells').name('Clear Reveal Cells');
+  utilitiesFolder.add(actions, 'clearHeldCells').name('Clear Held Cells');
   utilitiesFolder.add(actions, 'randomizeSpawn').name('Random Spawn');
   utilitiesFolder.add(actions, 'reconnectNetwork').name('Reconnect Network');
   utilitiesFolder.add(actions, 'disconnectNetwork').name('Disconnect Network');
@@ -2581,6 +3354,7 @@ revealFolder.add(config, 'revealImageOffsetX', -4000, 4000, 1)
   utilitiesFolder.add(actions, 'clearDebugPlayers').name('Clear Debug Players');
   utilitiesFolder.add(actions, 'reloadRevealImage').name('Reload Reveal Image');
   utilitiesFolder.add(actions, 'copyConfig').name('Copy Config');
+  utilitiesFolder.add(actions, 'pasteConfig').name('Paste Config');
   utilitiesFolder.close();
 
   gui.close();
