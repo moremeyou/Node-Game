@@ -1,12 +1,108 @@
 import GUI from 'lil-gui';
 import './style.css';
+import packageInfo from '../package.json';
 
 const canvas = document.querySelector('#app');
 const ctx = canvas.getContext('2d');
 
+const buildTimestamp = typeof __BUILD_TIMESTAMP__ !== 'undefined'
+  ? __BUILD_TIMESTAMP__
+  : 'dev';
+
+document.title = `nodegame v${packageInfo.version} (${buildTimestamp})`;
+
 let guiInstance = null;
+let guiHelpOverlay = null;
+let guiHelpActiveTarget = null;
+let guiHelpPinned = false;
 const guiControllers = {
   revealVignetteColor: null,
+};
+const GUI_HELP_TEXT = {
+  backgroundGradientEnabled: 'Turns the background gradient on or off behind the scene.',
+  backgroundGradientTopColor: 'Top color of the scene background gradient.',
+  backgroundGradientBottomColor: 'Bottom color of the scene background gradient.',
+  backgroundGradientTopAlpha: 'Opacity of the gradient at the top of the screen.',
+  backgroundGradientBottomAlpha: 'Opacity of the gradient at the bottom of the screen.',
+  backgroundColor: 'Fallback flat background color used when the gradient is disabled or too subtle to notice.',
+  gridSize: 'World-space size of one grid cell. This affects room geometry, movement spacing, and image cell size.',
+  minCellScreenPx: 'Minimum on-screen pixel size a world cell should try to maintain when fitting the room to the viewport.',
+  gridColor: 'Color of the base grid lines drawn across the world.',
+  gridOpacity: 'Opacity of the base grid lines.',
+  gridLineWidth: 'Thickness of the base grid lines.',
+  gridOverReveal: 'Draws the base grid over the image reveal instead of underneath it.',
+  spawnDelayMs: 'Delay before newly visible nodes begin showing up.',
+  spawnFadeMs: 'How long node spawn-in takes visually.',
+  followPointerDelayMs: 'How long after spawning the local node waits before it starts following the pointer.',
+  moveSpeed: 'Movement speed of nodes along the grid in world units per second.',
+  routePreference: 'How Manhattan routes choose their first axis when moving toward a target.',
+  turnPauseMs: 'Small pause inserted between grid-edge turns.',
+  segmentEasing: 'How much motion eases along each segment instead of moving perfectly linearly.',
+  nodeColor: 'Fill color of each visible node.',
+  nodeBorderColor: 'Outline color of each node.',
+  nodeBorderOpacity: 'Opacity of the node outline.',
+  nodeBorderWidth: 'Thickness of the node outline.',
+  nodeGlowColor: 'Glow color emitted by each node.',
+  nodeGlowOpacity: 'Opacity of the node glow. The current slider value is treated as the 3-player baseline and scales with co-op count.',
+  nodeGlowBlur: 'Blur radius of the node glow. The current slider value is treated as the 3-player baseline and scales with co-op count.',
+  nodeWidth: 'Width of each node in screen-scaled pixels.',
+  nodeHeight: 'Height of each node in screen-scaled pixels.',
+  nodeRadius: 'Corner radius of the node shape.',
+  nodePulseAmplitude: 'How much the idle node pulse changes node size over time.',
+  pulseSpeed: 'Speed of the idle node pulse. The current slider value is treated as the 2-player baseline and scales with co-op count.',
+  nodeSpawnStartScale: 'Initial scale multiplier when a node spawns in.',
+  nodeSpawnBounce: 'How springy the spawn scale animation feels.',
+  activeEdgeEnabled: 'Shows or hides the active-edge trail rendering. Trails are visual only now and no longer drive cell charge.',
+  activeEdgeColor: 'Core line color of the active-edge trail rendering.',
+  activeEdgeOpacity: 'Opacity of the active-edge line.',
+  activeEdgeGlowColor: 'Glow color for active-edge trails.',
+  activeEdgeGlowOpacity: 'Opacity of the active-edge glow.',
+  activeEdgeLineWidth: 'Thickness of the active-edge line.',
+  activeEdgeGlowWidth: 'Additional spread used to widen the active-edge glow.',
+  activeEdgeLineCap: 'Line cap style used for active-edge rendering.',
+  activeEdgeGlowBlur: 'Blur radius of the active-edge glow.',
+  activeEdgeHoldMs: 'How long a touched edge stays fully bright before its visual fade starts.',
+  activeEdgeFadeMs: 'How long active-edge trails take to visually fade out after hold time ends.',
+  npcCount: 'Local-only helper nodes for testing co-op behavior. NPCs count toward local co-op buffs.',
+  revealEnabled: 'Turns image reveal rendering on or off entirely.',
+  revealImageSrc: 'Image path used as the hidden reveal source.',
+  revealImageFitMode: 'How the reveal image is placed inside the room world before scale and offsets are applied.',
+  revealImageScale: 'Extra scale multiplier applied to the reveal image inside room space.',
+  revealImageOffsetX: 'Horizontal world-space offset for the reveal image.',
+  revealImageOffsetY: 'Vertical world-space offset for the reveal image.',
+  revealVignetteEnabled: 'Turns the edge vignette around the reveal image on or off.',
+  revealVignetteMode: 'Whether the vignette fades the image by alpha or blends it toward a color.',
+  revealVignetteColor: 'Color used when the vignette is in color mode.',
+  revealVignetteInnerOpacity: 'Vignette strength toward the center of the image bounds.',
+  revealVignetteEdgeOpacity: 'Vignette strength at the outer image edges.',
+  revealVignetteSize: 'How far the vignette extends inward from the image edges.',
+  revealVignetteCurve: 'Response curve for how quickly the vignette ramps from edge to center.',
+  revealImageOpacity: 'Overall opacity of the revealed image cells.',
+  revealTintColor: 'Tint color laid over revealed image cells.',
+  revealTintOpacity: 'Opacity of the reveal tint overlay.',
+  cellEnergyEffect: 'Global multiplier for the base Cell Energy settings. 1 keeps them unchanged, 0.5 weakens them, 2 strengthens them.',
+  cellChargePerSecond: 'Base image opacity added per second to the strongest cells nearest each node.',
+  cellChargeRingFalloff: 'How much weaker each outer ring is than the previous ring. Higher keeps energy spreading farther.',
+  cellRingFloorEnabled: 'When on, outer rings never drop below the configured minimum ring strength.',
+  cellRingFloor: 'Minimum multiplier for outer-ring charge once ring falloff has reduced it.',
+  cellChargeMaxRing: 'How many side-connected rings around a node receive any charge at all.',
+  cellDecayMs: 'How long an uncharged, unlocked cell takes to drain from full to empty.',
+  cellLockHoldMs: 'How long a cell stays pinned at 100 after it fully charges.',
+  cellLinkedLockFade: 'When on, side-connected locked cells share one release time and start fading together.',
+  coopBuffEffect: 'Global multiplier for all per-player co-op bonuses. 1 keeps them unchanged, 0 disables them.',
+  cellChargeBuffPerPlayer: 'Extra per-player charge multiplier applied on top of the base charge rate.',
+  cellRingFalloffBonusPerPlayer: 'Extra per-player increase to outer-ring strength, making charge spread feel wider.',
+  cellRingFloorBonusPerPlayer: 'Extra per-player increase to the minimum outer-ring strength when ring floor is enabled.',
+  cellRingCountBonusPerPlayer: 'Extra per-player ring reach. This is discrete, so smaller scaled bonuses may not add a new ring yet.',
+  cellDecayBonusMsPerPlayer: 'Extra per-player time before cells fully drain, making patches linger longer.',
+  cellLockHoldBonusMsPerPlayer: 'Extra per-player hold time after a cell reaches 100.',
+  showTarget: 'Shows the current target intersection for the local player.',
+  showIntersections: 'Shows the world-space grid intersections used for movement and node snapping.',
+  showRevealCells: 'Legacy reveal debug from the previous edge-driven model.',
+  showHeldCells: 'Shows each room cell as a 0-100 image-opacity value from the current cell-energy system.',
+  showTrailBuffOverlay: 'Shows live co-op and cell-energy buff values in the lower-left overlay.',
+  showPlayerIds: 'Draws each visible player id above its node.',
+  showViewportDebug: 'Shows canvas and viewport metrics for layout debugging.',
 };
 
 function parseCssPixelValue(value) {
@@ -67,7 +163,172 @@ function applyGuiLayout(gui) {
   el.style.overflowX = 'hidden';
   el.style.overflowY = 'auto';
   el.style.zIndex = '30';
+  positionGuiHelpOverlay();
 }
+
+function ensureGuiHelpOverlay(gui) {
+  if (!gui) {
+    return null;
+  }
+
+  if (guiHelpOverlay && guiHelpOverlay.isConnected) {
+    return guiHelpOverlay;
+  }
+
+  guiHelpOverlay = document.createElement('div');
+  guiHelpOverlay.style.position = 'fixed';
+  guiHelpOverlay.style.zIndex = '40';
+  guiHelpOverlay.style.display = 'none';
+  guiHelpOverlay.style.maxWidth = '280px';
+  guiHelpOverlay.style.padding = '10px 12px';
+  guiHelpOverlay.style.font = '11px/1.35 monospace';
+  guiHelpOverlay.style.whiteSpace = 'normal';
+  guiHelpOverlay.style.background = 'rgba(0, 0, 0, 0.82)';
+  guiHelpOverlay.style.border = '1px solid rgba(255, 255, 255, 0.16)';
+  guiHelpOverlay.style.borderRadius = '6px';
+  guiHelpOverlay.style.color = 'rgba(255, 255, 255, 0.88)';
+  guiHelpOverlay.style.pointerEvents = 'none';
+  guiHelpOverlay.style.boxSizing = 'border-box';
+  guiHelpOverlay.style.boxShadow = '0 10px 28px rgba(0, 0, 0, 0.26)';
+  document.body.appendChild(guiHelpOverlay);
+  return guiHelpOverlay;
+}
+
+function positionGuiHelpOverlay() {
+  if (
+    !guiHelpOverlay
+    || !guiHelpActiveTarget
+    || guiHelpOverlay.style.display === 'none'
+  ) {
+    return;
+  }
+
+  const targetRect = guiHelpActiveTarget.getBoundingClientRect();
+  const guiRect = guiInstance && guiInstance.domElement
+    ? guiInstance.domElement.getBoundingClientRect()
+    : targetRect;
+  const viewportWidth = window.innerWidth || document.documentElement.clientWidth || 0;
+  const viewportHeight = window.innerHeight || document.documentElement.clientHeight || 0;
+  const margin = 12;
+  const preferredWidth = 280;
+  const maxAvailableLeft = Math.max(200, Math.min(preferredWidth, guiRect.left - margin * 2));
+  const fallbackWidth = Math.max(220, Math.min(preferredWidth, viewportWidth - margin * 2));
+  let width = maxAvailableLeft;
+  let left = guiRect.left - width - margin;
+
+  if (left < margin) {
+    width = fallbackWidth;
+    left = Math.min(viewportWidth - width - margin, guiRect.right + margin);
+  }
+
+  guiHelpOverlay.style.width = `${Math.max(200, width)}px`;
+  guiHelpOverlay.style.left = `${Math.max(margin, left)}px`;
+
+  const overlayHeight = guiHelpOverlay.offsetHeight || 0;
+  const targetMidY = targetRect.top + targetRect.height * 0.5;
+  const top = clamp(
+    targetMidY - overlayHeight * 0.5,
+    margin,
+    Math.max(margin, viewportHeight - overlayHeight - margin),
+  );
+  guiHelpOverlay.style.top = `${top}px`;
+}
+
+function showGuiHelp(text, target, { pinned = false } = {}) {
+  if (!text || !target) {
+    return;
+  }
+
+  ensureGuiHelpOverlay(guiInstance);
+  if (!guiHelpOverlay) {
+    return;
+  }
+
+  guiHelpOverlay.textContent = text;
+  guiHelpActiveTarget = target;
+  guiHelpPinned = pinned;
+  guiHelpOverlay.style.display = 'block';
+  positionGuiHelpOverlay();
+}
+
+function hideGuiHelp({ force = false } = {}) {
+  if (!guiHelpOverlay) {
+    return;
+  }
+
+  if (guiHelpPinned && !force) {
+    return;
+  }
+
+  guiHelpOverlay.style.display = 'none';
+  guiHelpActiveTarget = null;
+  guiHelpPinned = false;
+}
+
+function handleGlobalGuiHelpPointerDown(event) {
+  if (!guiHelpPinned) {
+    return;
+  }
+
+  if (guiInstance && guiInstance.domElement && guiInstance.domElement.contains(event.target)) {
+    return;
+  }
+
+  hideGuiHelp({ force: true });
+}
+
+function attachGuiHelp(controller, text) {
+  if (!controller || !controller.domElement || !text) {
+    return controller;
+  }
+
+  const target = controller.domElement;
+  if (!target) {
+    return controller;
+  }
+
+  if (target.dataset.guiHelpBound === '1') {
+    return controller;
+  }
+
+  const label = controller.domElement.querySelector('.name');
+  if (label) {
+    label.title = text;
+  }
+
+  const showHelp = () => showGuiHelp(text, target);
+  const hideHelp = () => hideGuiHelp();
+  const pinHelp = () => showGuiHelp(text, target, { pinned: true });
+  target.addEventListener('pointerenter', showHelp);
+  target.addEventListener('pointerleave', hideHelp);
+  target.addEventListener('focusin', showHelp);
+  target.addEventListener('focusout', hideHelp);
+  target.addEventListener('pointerdown', pinHelp);
+  target.dataset.guiHelpBound = '1';
+  return controller;
+}
+
+function bindGuiHelpFromMap(gui) {
+  if (!gui || typeof gui.controllersRecursive !== 'function') {
+    return;
+  }
+
+  for (const controller of gui.controllersRecursive()) {
+    const key = controller && typeof controller.property === 'string'
+      ? controller.property
+      : null;
+    const text = key ? GUI_HELP_TEXT[key] : null;
+    if (!text) {
+      continue;
+    }
+
+    attachGuiHelp(controller, text);
+  }
+}
+
+document.addEventListener('pointerdown', handleGlobalGuiHelpPointerDown, true);
+window.addEventListener('resize', positionGuiHelpOverlay);
+window.addEventListener('scroll', positionGuiHelpOverlay, true);
 
 function setControllerEnabled(controller, enabled) {
   if (!controller || !controller.domElement) {
@@ -88,6 +349,9 @@ const revealSourceCtx = revealSourceCanvas.getContext('2d');
 
 const LOCAL_PLAYER_ID = 'local';
 const DEBUG_PLAYER_PREFIX = 'debug-';
+const NPC_PLAYER_PREFIX = 'npc-';
+const NPC_PATCH_LOOP_COUNT = 2;
+const NPC_PATCH_MIN_SEPARATION = 4;
 
 function getDefaultNetworkUrl() {
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -133,7 +397,7 @@ const config = {
   pulseSpeed: 6.4,
   nodeSpawnStartScale: 7.4,
   nodeSpawnBounce: 1.5,
-  activeEdgeEnabled: true,
+  activeEdgeEnabled: false,
   activeEdgeColor: "#b8d5ff",
   activeEdgeOpacity: 0.95,
   activeEdgeGlowColor: "#6ea9ff",
@@ -142,9 +406,10 @@ const config = {
   activeEdgeGlowWidth: 26,
   activeEdgeLineCap: "square",
   activeEdgeGlowBlur: 32,
-  activeEdgeHoldMs: 90,
+  activeEdgeHoldMs: 50,
   activeEdgeFadeMs: 670,
   trailLengthBuff: 0,
+  npcCount: 1,
   revealEnabled: true,
   revealImageSrc: "/teaser-hidden.jpg",
   revealImageFitMode: 'native',
@@ -165,33 +430,54 @@ const config = {
   revealOpacity3: 0.43,
   revealOpacity4: 0.54,
   revealClosedBonus: 0.24,
-  revealFadeInMs: 30,
+  revealFadeInMs: 0,
   revealHoldMs: 0,
   revealFadeOutMs: 160,
   revealImageOpacity: 1,
   revealTintColor: "#000000",
-  revealTintOpacity: 0.14,
+  revealTintOpacity: 0,
   enclosureEnabled: true,
   enclosureIncludeCurrentSegment: false,
   enclosureEdgeActiveThreshold: 0.55,
-  enclosureMinCells: 1,
-  enclosureMaxCells: 2000,
+  enclosureEdgeHoldMs: 900,
+  enclosureEdgeFadeMs: 900,
+  enclosureMinCells: 4,
+  enclosureMaxCells: 12,
+  roomPatchMaxCellsPerPlayer: 12,
   enclosureMinContributors: 1,
   heldCellOpacity: 0.72,
   heldCellContributorOpacityBonus: 0.14,
-  heldCellFadeInMs: 120,
-  heldCellHoldMs: 600,
-  heldCellContributorHoldBonusMs: 400,
+  heldCellFadeInMs: 0,
+  heldCellHoldMs: 1600,
+  heldCellContributorHoldBonusMs: 1200,
   heldCellFadeOutMs: 1200,
+  heldEdgeFadeEnabled: true,
+  heldEdgeFadeMinAlpha: 0.22,
   heldCellImageOpacity: 1,
   heldCellTintColor: "#7eb6ff",
-  heldCellTintOpacity: 0.12,
+  heldCellTintOpacity: 0,
+  cellChargePerSecond: 1.1,
+  cellChargeRingFalloff: 0.5,
+  cellRingFloorEnabled: true,
+  cellRingFloor: 0,
+  cellChargeMaxRing: 2,
+  cellEnergyEffect: 1,
+  coopBuffEffect: 1,
+  cellChargeBuffPerPlayer: 0,
+  cellRingFalloffBonusPerPlayer: 0,
+  cellRingFloorBonusPerPlayer: 0,
+  cellRingCountBonusPerPlayer: 0,
+  cellDecayMs: 1800,
+  cellDecayBonusMsPerPlayer: 400,
+  cellLockHoldMs: 1600,
+  cellLockHoldBonusMsPerPlayer: 800,
+  cellLinkedLockFade: true,
   gridOverReveal: true,
   showTarget: false,
   showIntersections: true,
   showRevealCells: false,
   showHeldCells: false,
-  showTrailBuffOverlay: true,
+  showTrailBuffOverlay: false,
   showPlayerIds: false,
   showViewportDebug: false,
   networkEnabled: true,
@@ -320,6 +606,7 @@ const state = {
   localPlayerId: LOCAL_PLAYER_ID,
   players: new Map(),
   activeEdges: new Map(),
+  cellStates: new Map(),
   revealCells: new Map(),
   heldCells: new Map(),
   room: {
@@ -336,6 +623,11 @@ const state = {
   },
   alternatingAxisStartsHorizontal: true,
   nextDebugPlayerIndex: 1,
+  npc: {
+    patchCell: null,
+    lastPatchCell: null,
+    patchVersion: 0,
+  },
   network: {
     socket: null,
     status: 'disconnected',
@@ -553,6 +845,7 @@ const actions = {
     state.activeEdges.clear();
   },
   clearRevealCells() {
+    state.cellStates.clear();
     state.revealCells.clear();
   },
   clearHeldCells() {
@@ -707,8 +1000,54 @@ function isDebugPlayerId(playerId) {
   return String(playerId || '').startsWith(DEBUG_PLAYER_PREFIX);
 }
 
+function isNpcPlayerId(playerId) {
+  return String(playerId || '').startsWith(NPC_PLAYER_PREFIX);
+}
+
+function isSyntheticLocalPlayerId(playerId) {
+  return isDebugPlayerId(playerId) || isNpcPlayerId(playerId);
+}
+
 function isRemotePlayerId(playerId) {
-  return playerId !== LOCAL_PLAYER_ID && !isDebugPlayerId(playerId);
+  return playerId !== LOCAL_PLAYER_ID && !isSyntheticLocalPlayerId(playerId);
+}
+
+function getNpcIndexFromPlayerId(playerId) {
+  const suffix = String(playerId || '').slice(NPC_PLAYER_PREFIX.length);
+  const index = Number.parseInt(suffix, 10);
+  return Number.isFinite(index) ? index : 0;
+}
+
+function getNpcPlayers() {
+  return Array.from(state.players.values())
+    .filter((player) => isNpcPlayerId(player.id))
+    .sort((a, b) => getNpcIndexFromPlayerId(a.id) - getNpcIndexFromPlayerId(b.id));
+}
+
+function countVisibleNpcPlayers() {
+  let count = 0;
+
+  for (const player of state.players.values()) {
+    if (player.visible && isNpcPlayerId(player.id)) {
+      count += 1;
+    }
+  }
+
+  return count;
+}
+
+function countVisibleSyntheticLocalPlayers() {
+  let count = 0;
+
+  for (const player of state.players.values()) {
+    if (!player.visible || !isSyntheticLocalPlayerId(player.id)) {
+      continue;
+    }
+
+    count += 1;
+  }
+
+  return count;
 }
 
 function getSocketReadyStateName(socket) {
@@ -745,17 +1084,118 @@ function updateNetworkInfo() {
 }
 
 function getEffectiveRoomPlayerCount() {
+  const syntheticCount = countVisibleSyntheticLocalPlayers();
+
   if (state.network.roomId) {
-    return Math.max(1, Math.round(state.network.playerCount || 1));
+    return Math.max(1, Math.round(state.network.playerCount || 1) + syntheticCount);
   }
 
-  return Math.max(1, state.players.size);
+  let visiblePlayers = 0;
+  for (const player of state.players.values()) {
+    if (player.visible) {
+      visiblePlayers += 1;
+    }
+  }
+
+  return Math.max(1, visiblePlayers);
 }
 
 function getTrailLengthMultiplier() {
   const playerCount = getEffectiveRoomPlayerCount();
   const perExtraPlayerBuff = Math.max(0, Number(config.trailLengthBuff) || 0);
   return 1 + perExtraPlayerBuff * Math.max(0, playerCount - 1);
+}
+
+function getEffectiveCoopExtraPlayers() {
+  return Math.max(0, getEffectiveRoomPlayerCount() - 1);
+}
+
+function getCoopBuffEffectScale() {
+  return Math.max(0, Number(config.coopBuffEffect) || 0);
+}
+
+function getCellEnergyEffectScale() {
+  return Math.max(0, Number(config.cellEnergyEffect) || 0);
+}
+
+function getEffectiveBaseCellChargePerSecond() {
+  return Math.max(0, Number(config.cellChargePerSecond) || 0) * getCellEnergyEffectScale();
+}
+
+function getEffectiveCellChargeMultiplier() {
+  const perExtraPlayerBuff = Math.max(0, Number(config.cellChargeBuffPerPlayer) || 0);
+  return 1 + perExtraPlayerBuff * getCoopBuffEffectScale() * getEffectiveCoopExtraPlayers();
+}
+
+function getEffectiveCellChargeRingFalloff() {
+  const baseFalloff = clamp(
+    (Number(config.cellChargeRingFalloff) || 0) * getCellEnergyEffectScale(),
+    0,
+    1,
+  );
+  const perExtraPlayerBonus = Math.max(0, Number(config.cellRingFalloffBonusPerPlayer) || 0);
+  const buffedFalloff = baseFalloff
+    + perExtraPlayerBonus * getCoopBuffEffectScale() * getEffectiveCoopExtraPlayers();
+  return clamp(buffedFalloff, 0, 1);
+}
+
+function getEffectiveCellRingFloor() {
+  const baseFloor = clamp((Number(config.cellRingFloor) || 0) * getCellEnergyEffectScale(), 0, 1);
+  const perExtraPlayerBonus = Math.max(0, Number(config.cellRingFloorBonusPerPlayer) || 0);
+  const buffedFloor = baseFloor
+    + perExtraPlayerBonus * getCoopBuffEffectScale() * getEffectiveCoopExtraPlayers();
+  return clamp(buffedFloor, 0, 1);
+}
+
+function getEffectiveCellChargeMaxRing() {
+  const baseRingCount = Math.max(
+    0,
+    Math.floor((Number(config.cellChargeMaxRing) || 0) * getCellEnergyEffectScale() + 1e-6),
+  );
+  const perExtraPlayerBonus = Math.max(0, Number(config.cellRingCountBonusPerPlayer) || 0);
+  const buffedRingCount = baseRingCount
+    + perExtraPlayerBonus * getCoopBuffEffectScale() * getEffectiveCoopExtraPlayers();
+  return Math.max(0, Math.floor(buffedRingCount + 1e-6));
+}
+
+function getEffectiveCellDecayMs() {
+  const baseDecayMs = Math.max(1, (Number(config.cellDecayMs) || 1) * getCellEnergyEffectScale());
+  const perExtraPlayerBonus = Math.max(0, Number(config.cellDecayBonusMsPerPlayer) || 0);
+  return Math.max(
+    1,
+    baseDecayMs + perExtraPlayerBonus * getCoopBuffEffectScale() * getEffectiveCoopExtraPlayers(),
+  );
+}
+
+function getEffectiveCellLockHoldMs() {
+  const baseHoldMs = Math.max(0, (Number(config.cellLockHoldMs) || 0) * getCellEnergyEffectScale());
+  const perExtraPlayerBonus = Math.max(0, Number(config.cellLockHoldBonusMsPerPlayer) || 0);
+  return Math.max(
+    0,
+    baseHoldMs + perExtraPlayerBonus * getCoopBuffEffectScale() * getEffectiveCoopExtraPlayers(),
+  );
+}
+
+function getEffectiveNodePulseSpeed() {
+  const playerCount = Math.max(1, getEffectiveRoomPlayerCount());
+  return Math.max(0, Number(config.pulseSpeed) || 0) * (playerCount / 2);
+}
+
+function getEffectiveNodeGlowOpacity() {
+  const playerCount = Math.max(1, getEffectiveRoomPlayerCount());
+  return clamp((Number(config.nodeGlowOpacity) || 0) * (playerCount / 3), 0, 1);
+}
+
+function getEffectiveNodeGlowBlur() {
+  const playerCount = Math.max(1, getEffectiveRoomPlayerCount());
+  return Math.max(0, (Number(config.nodeGlowBlur) || 0) * (playerCount / 3));
+}
+
+function getEffectivePatchMaxCells() {
+  const baseMaxCells = Math.max(1, Math.round(config.enclosureMaxCells));
+  const playerCount = getEffectiveRoomPlayerCount();
+  const perExtraPlayerBonus = Math.max(0, Math.round(config.roomPatchMaxCellsPerPlayer || 0));
+  return Math.max(1, baseMaxCells + perExtraPlayerBonus * Math.max(0, playerCount - 1));
 }
 
 function setNetworkStatus(status) {
@@ -1491,10 +1931,6 @@ function getCellRect(cell) {
 }
 
 function touchActiveEdge(sourceId, start, end, touchedAt = state.now) {
-  if (!config.activeEdgeEnabled) {
-    return;
-  }
-
   const key = createSegmentKey(start, end);
   let edge = state.activeEdges.get(key);
 
@@ -1513,12 +1949,28 @@ function touchActiveEdge(sourceId, start, end, touchedAt = state.now) {
   state.activeEdges.set(key, edge);
 }
 
-function getActiveEdgeSourceAlphaMultiplier(source) {
-  const hold = Math.max(0, config.activeEdgeHoldMs * getTrailLengthMultiplier());
-  const fade = Math.max(1, config.activeEdgeFadeMs);
+function getEdgeSourceStrengthMultiplier(source, holdMs, fadeMs) {
+  const hold = Math.max(0, holdMs);
+  const fade = Math.max(1, fadeMs);
   const age = state.now - source.lastTouchedAt;
   const fadeProgress = age <= hold ? 0 : clamp((age - hold) / fade, 0, 1);
   return 1 - fadeProgress;
+}
+
+function getActiveEdgeSourceAlphaMultiplier(source) {
+  return getEdgeSourceStrengthMultiplier(
+    source,
+    config.activeEdgeHoldMs * getTrailLengthMultiplier(),
+    config.activeEdgeFadeMs,
+  );
+}
+
+function getEnclosureEdgeSourceStrengthMultiplier(source) {
+  return getEdgeSourceStrengthMultiplier(
+    source,
+    config.enclosureEdgeHoldMs,
+    config.enclosureEdgeFadeMs,
+  );
 }
 
 function getActiveEdgeAlphaMultiplier(edge) {
@@ -1534,7 +1986,9 @@ function getActiveEdgeAlphaMultiplier(edge) {
 function clearExpiredActiveEdges() {
   for (const [key, edge] of state.activeEdges.entries()) {
     for (const [sourceId, source] of edge.sources.entries()) {
-      if (getActiveEdgeSourceAlphaMultiplier(source) <= 0) {
+      const visualStrength = getActiveEdgeSourceAlphaMultiplier(source);
+      const enclosureStrength = getEnclosureEdgeSourceStrengthMultiplier(source);
+      if (visualStrength <= 0 && enclosureStrength <= 0) {
         edge.sources.delete(sourceId);
       }
     }
@@ -1585,6 +2039,178 @@ function buildPath(from, to) {
   const secondLeg = buildAxisPath(pivot, to, secondAxis);
 
   return [...firstLeg, ...secondLeg];
+}
+
+function buildNpcPatchCorners(patchCell) {
+  return [
+    { col: patchCell.col, row: patchCell.row },
+    { col: patchCell.col + 2, row: patchCell.row },
+    { col: patchCell.col + 2, row: patchCell.row + 2 },
+    { col: patchCell.col, row: patchCell.row + 2 },
+  ];
+}
+
+function buildNpcPatchWaypoints(patchCell, phaseOffset, loops = NPC_PATCH_LOOP_COUNT) {
+  const corners = buildNpcPatchCorners(patchCell);
+  const startIndex = ((phaseOffset % corners.length) + corners.length) % corners.length;
+  const waypoints = [{ ...corners[startIndex] }];
+
+  for (let loopIndex = 0; loopIndex < loops; loopIndex += 1) {
+    for (let stepIndex = 1; stepIndex <= corners.length; stepIndex += 1) {
+      waypoints.push({ ...corners[(startIndex + stepIndex) % corners.length] });
+    }
+  }
+
+  return waypoints;
+}
+
+function chooseNpcPatchCell(previousCell = null) {
+  const maxPatchCol = Math.max(0, cellCountX() - 2);
+  const maxPatchRow = Math.max(0, cellCountY() - 2);
+  const fallback = {
+    col: Math.max(0, Math.floor(maxPatchCol * 0.5)),
+    row: Math.max(0, Math.floor(maxPatchRow * 0.5)),
+  };
+
+  if (maxPatchCol <= 0 || maxPatchRow <= 0) {
+    return fallback;
+  }
+
+  let bestCandidate = null;
+
+  for (let attempt = 0; attempt < 24; attempt += 1) {
+    const candidate = {
+      col: Math.floor(Math.random() * (maxPatchCol + 1)),
+      row: Math.floor(Math.random() * (maxPatchRow + 1)),
+    };
+
+    if (!previousCell) {
+      return candidate;
+    }
+
+    const separation = Math.abs(candidate.col - previousCell.col) + Math.abs(candidate.row - previousCell.row);
+    if (separation >= NPC_PATCH_MIN_SEPARATION) {
+      return candidate;
+    }
+
+    if (!bestCandidate || separation > bestCandidate.separation) {
+      bestCandidate = {
+        separation,
+        cell: candidate,
+      };
+    }
+  }
+
+  return bestCandidate ? bestCandidate.cell : fallback;
+}
+
+function setNpcPatchCell(patchCell) {
+  state.npc.lastPatchCell = state.npc.patchCell ? { ...state.npc.patchCell } : state.npc.lastPatchCell;
+  state.npc.patchCell = patchCell ? { ...patchCell } : null;
+  state.npc.patchVersion += 1;
+}
+
+function syncNpcPlayers() {
+  const desiredCount = Math.max(0, Math.round(config.npcCount));
+  const seenIds = new Set();
+
+  for (let index = 1; index <= desiredCount; index += 1) {
+    const id = `${NPC_PLAYER_PREFIX}${index}`;
+    seenIds.add(id);
+
+    let player = getPlayer(id);
+    if (!player) {
+      player = ensurePlayer(id, {
+        isLocal: false,
+        visible: true,
+        spawnedAt: state.now,
+        npcRole: index === 1 ? 'lead' : 'follower',
+        npcPatchVersion: -1,
+        npcWaypoints: [],
+        npcWaypointIndex: 0,
+        npcInitialized: false,
+      });
+    } else {
+      player.npcRole = index === 1 ? 'lead' : 'follower';
+      player.visible = true;
+      if (player.spawnedAt == null) {
+        player.spawnedAt = state.now;
+      }
+    }
+
+    if (!player.current) {
+      placePlayerAt(player, randomVisibleIntersection());
+      player.spawnedAt = state.now;
+      player.visible = true;
+    }
+  }
+
+  for (const [playerId, player] of state.players.entries()) {
+    if (!isNpcPlayerId(playerId) || seenIds.has(playerId)) {
+      continue;
+    }
+
+    clearPlayerContributions(playerId);
+    state.players.delete(playerId);
+  }
+
+  if (desiredCount <= 0 && state.npc.patchCell) {
+    setNpcPatchCell(null);
+  }
+}
+
+function applyNpcPatchPlan(player) {
+  if (!state.npc.patchCell) {
+    return;
+  }
+
+  const phaseOffset = Math.max(0, getNpcIndexFromPlayerId(player.id) - 1);
+  const waypoints = buildNpcPatchWaypoints(state.npc.patchCell, phaseOffset);
+  player.npcPatchVersion = state.npc.patchVersion;
+  player.npcWaypoints = waypoints;
+  player.npcWaypointIndex = 0;
+  resetPlayerNavigation(player);
+
+  if (!player.npcInitialized && waypoints.length > 0) {
+    placePlayerAt(player, waypoints[0]);
+    player.npcInitialized = true;
+  }
+}
+
+function advanceNpcWaypointPlan(player) {
+  if (!Array.isArray(player.npcWaypoints)) {
+    return;
+  }
+
+  while (
+    player.npcWaypointIndex < player.npcWaypoints.length
+    && player.current
+    && sameIntersection(player.current, player.npcWaypoints[player.npcWaypointIndex])
+    && !player.segment
+    && player.pathQueue.length === 0
+  ) {
+    player.npcWaypointIndex += 1;
+  }
+
+  if (player.npcWaypointIndex >= player.npcWaypoints.length) {
+    player.desiredTarget = null;
+    return;
+  }
+
+  const nextWaypoint = player.npcWaypoints[player.npcWaypointIndex];
+  if (!player.segment && player.pathQueue.length === 0) {
+    player.desiredTarget = { ...nextWaypoint };
+  }
+}
+
+function npcPlanComplete(player) {
+  return (
+    Array.isArray(player.npcWaypoints)
+    && player.npcPatchVersion === state.npc.patchVersion
+    && player.npcWaypointIndex >= player.npcWaypoints.length
+    && !player.segment
+    && player.pathQueue.length === 0
+  );
 }
 
 function placePlayerAt(player, intersection) {
@@ -1652,31 +2278,9 @@ function refreshPathIfNeeded(player) {
   startNextSegment(player);
 }
 
-function updateLocalPlayer(deltaSeconds) {
-  const player = getLocalPlayer();
-  if (!player) {
+function updateDrivenPlayer(player, deltaSeconds, { sendNetworkEdges = false } = {}) {
+  if (!player || !player.visible) {
     return;
-  }
-
-  if (!player.visible) {
-    const elapsed = state.now - state.startTime;
-
-    if (elapsed >= config.spawnDelayMs) {
-      player.visible = true;
-      player.spawnedAt = state.now;
-      player.desiredTarget = null;
-      placePlayerAt(player, randomVisibleIntersection());
-
-      if (state.pointer.active) {
-        refreshPointerTargetFromStoredPointer();
-      }
-    }
-
-    return;
-  }
-
-  if (!player.desiredTarget && state.pointer.active && playerCanFollowPointer(player)) {
-    refreshPointerTargetFromStoredPointer();
   }
 
   if (state.now < player.turnHoldUntil) {
@@ -1714,7 +2318,9 @@ function updateLocalPlayer(deltaSeconds) {
     player.current = { ...segment.endIntersection };
 
     touchActiveEdge(player.id, segment.startIntersection, segment.endIntersection);
-    sendEdgeTouch(segment.startIntersection, segment.endIntersection);
+    if (sendNetworkEdges) {
+      sendEdgeTouch(segment.startIntersection, segment.endIntersection);
+    }
 
     player.segment = null;
 
@@ -1730,6 +2336,63 @@ function updateLocalPlayer(deltaSeconds) {
     }
 
     refreshPathIfNeeded(player);
+  }
+}
+
+function updateLocalPlayer(deltaSeconds) {
+  const player = getLocalPlayer();
+  if (!player) {
+    return;
+  }
+
+  if (!player.visible) {
+    const elapsed = state.now - state.startTime;
+
+    if (elapsed >= config.spawnDelayMs) {
+      player.visible = true;
+      player.spawnedAt = state.now;
+      player.desiredTarget = null;
+      placePlayerAt(player, randomVisibleIntersection());
+
+      if (state.pointer.active) {
+        refreshPointerTargetFromStoredPointer();
+      }
+    }
+
+    return;
+  }
+
+  if (!player.desiredTarget && state.pointer.active && playerCanFollowPointer(player)) {
+    refreshPointerTargetFromStoredPointer();
+  }
+
+  updateDrivenPlayer(player, deltaSeconds, { sendNetworkEdges: true });
+}
+
+function updateNpcPlayers(deltaSeconds) {
+  syncNpcPlayers();
+
+  const npcPlayers = getNpcPlayers();
+  if (npcPlayers.length === 0) {
+    return;
+  }
+
+  const lead = npcPlayers[0];
+  if (!state.npc.patchCell) {
+    setNpcPatchCell(chooseNpcPatchCell(state.npc.lastPatchCell));
+  }
+
+  for (const player of npcPlayers) {
+    if (player.npcPatchVersion !== state.npc.patchVersion) {
+      applyNpcPatchPlan(player);
+    }
+
+    advanceNpcWaypointPlan(player);
+    updateDrivenPlayer(player, deltaSeconds, { sendNetworkEdges: false });
+  }
+
+  if (npcPlanComplete(lead)) {
+    setNpcPatchCell(chooseNpcPatchCell(state.npc.patchCell || state.npc.lastPatchCell));
   }
 }
 
@@ -1791,7 +2454,10 @@ function buildEdgeActivitySnapshot({ includeCurrentSegment = false } = {}) {
   }
 
   for (const [key, edge] of state.activeEdges.entries()) {
-    const strength = getActiveEdgeAlphaMultiplier(edge);
+    let strength = 0;
+    for (const source of edge.sources.values()) {
+      strength = Math.max(strength, getEnclosureEdgeSourceStrengthMultiplier(source));
+    }
     if (strength <= 0) {
       continue;
     }
@@ -2069,6 +2735,303 @@ function getHeldCellTargetAlpha(contributorCount) {
   return clamp(config.heldCellOpacity + contributorBonus, 0, 1);
 }
 
+function getHeldCellVisualAlpha(cell) {
+  const entry = state.heldCells.get(createCellKey(cell));
+  return entry ? clamp(entry.alpha || 0, 0, 1) : 0;
+}
+
+function getRevealCellVisualAlpha(cell) {
+  const entry = state.revealCells.get(createCellKey(cell));
+  return entry ? clamp(entry.alpha || 0, 0, 1) : 0;
+}
+
+function getCellStateVisualAlpha(cell) {
+  const entry = state.cellStates.get(createCellKey(cell));
+  return entry ? clamp(entry.alpha || 0, 0, 1) : 0;
+}
+
+function getCellImageOpacity(cell) {
+  return getCellStateVisualAlpha(cell);
+}
+
+function countLockedCellStates() {
+  let count = 0;
+
+  for (const entry of state.cellStates.values()) {
+    if (clamp(entry.alpha || 0, 0, 1) <= 0.001) {
+      continue;
+    }
+
+    if (entry.lockedUntil > state.now) {
+      count += 1;
+    }
+  }
+
+  return count;
+}
+
+function getHeldCellsAdjacentToEdge(edge) {
+  const cols = cellCountX();
+  const rows = cellCountY();
+  const start = edge.start;
+  const end = edge.end;
+
+  if (start.row === end.row) {
+    const row = start.row;
+    const minCol = Math.min(start.col, end.col);
+    const topCellRow = row - 1;
+    const bottomCellRow = row;
+
+    if (
+      minCol < 0
+      || minCol >= cols
+      || topCellRow < 0
+      || bottomCellRow >= rows
+    ) {
+      return null;
+    }
+
+    return [
+      { col: minCol, row: topCellRow },
+      { col: minCol, row: bottomCellRow },
+    ];
+  }
+
+  if (start.col === end.col) {
+    const col = start.col;
+    const minRow = Math.min(start.row, end.row);
+    const leftCellCol = col - 1;
+    const rightCellCol = col;
+
+    if (
+      minRow < 0
+      || minRow >= rows
+      || leftCellCol < 0
+      || rightCellCol >= cols
+    ) {
+      return null;
+    }
+
+    return [
+      { col: leftCellCol, row: minRow },
+      { col: rightCellCol, row: minRow },
+    ];
+  }
+
+  return null;
+}
+
+function getHeldEdgeFadeMultiplier(edge) {
+  if (!config.heldEdgeFadeEnabled || !config.revealEnabled) {
+    return 1;
+  }
+
+  const adjacentCells = getHeldCellsAdjacentToEdge(edge);
+  if (!adjacentCells) {
+    return 1;
+  }
+
+  const [a, b] = adjacentCells;
+  if (getCellImageOpacity(a) <= 0.001 || getCellImageOpacity(b) <= 0.001) {
+    return 1;
+  }
+
+  return clamp(config.heldEdgeFadeMinAlpha, 0, 1);
+}
+
+function pointToRectDistance(x, y, rect) {
+  const dx = x < rect.x
+    ? rect.x - x
+    : x > rect.x + rect.width
+      ? x - (rect.x + rect.width)
+      : 0;
+  const dy = y < rect.y
+    ? rect.y - y
+    : y > rect.y + rect.height
+      ? y - (rect.y + rect.height)
+      : 0;
+  return Math.hypot(dx, dy);
+}
+
+function buildCellChargeRateMap() {
+  const chargeRates = new Map();
+  const cols = cellCountX();
+  const rows = cellCountY();
+  if (cols <= 0 || rows <= 0) {
+    return chargeRates;
+  }
+
+  const cellSize = getWorldCellSize();
+  const maxRing = getEffectiveCellChargeMaxRing();
+  const ringFalloff = getEffectiveCellChargeRingFalloff();
+  const ringFloor = config.cellRingFloorEnabled ? getEffectiveCellRingFloor() : 0;
+  const baseChargeRate = getEffectiveBaseCellChargePerSecond() * getEffectiveCellChargeMultiplier();
+
+  for (const player of getRenderablePlayers()) {
+    const minCol = clamp(Math.floor(player.x / cellSize) - maxRing - 1, 0, cols - 1);
+    const maxCol = clamp(Math.floor(player.x / cellSize) + maxRing + 1, 0, cols - 1);
+    const minRow = clamp(Math.floor(player.y / cellSize) - maxRing - 1, 0, rows - 1);
+    const maxRow = clamp(Math.floor(player.y / cellSize) + maxRing + 1, 0, rows - 1);
+
+    for (let col = minCol; col <= maxCol; col += 1) {
+      for (let row = minRow; row <= maxRow; row += 1) {
+        const cell = { col, row };
+        const rect = getCellRect(cell);
+        const distanceCells = pointToRectDistance(player.x, player.y, rect) / cellSize;
+        const ringIndex = distanceCells <= 0.001 ? 0 : Math.ceil(distanceCells - 0.001);
+
+        if (ringIndex > maxRing) {
+          continue;
+        }
+
+        const weight = ringIndex === 0
+          ? 1
+          : Math.max(Math.pow(ringFalloff, ringIndex), ringFloor);
+        if (weight <= 0) {
+          continue;
+        }
+
+        const key = createCellKey(cell);
+        chargeRates.set(key, (chargeRates.get(key) || 0) + baseChargeRate * weight);
+      }
+    }
+  }
+
+  return chargeRates;
+}
+
+function synchronizeLinkedLockedCellGroups() {
+  if (!config.cellLinkedLockFade) {
+    return;
+  }
+
+  const lockedKeys = new Set();
+  for (const [key, entry] of state.cellStates.entries()) {
+    if (entry.lockedUntil > state.now && clamp(entry.alpha || 0, 0, 1) >= 0.999) {
+      lockedKeys.add(key);
+    }
+  }
+
+  if (lockedKeys.size <= 1) {
+    return;
+  }
+
+  const visited = new Set();
+  const directions = [
+    { col: 1, row: 0 },
+    { col: -1, row: 0 },
+    { col: 0, row: 1 },
+    { col: 0, row: -1 },
+  ];
+
+  for (const key of lockedKeys) {
+    if (visited.has(key)) {
+      continue;
+    }
+
+    const queue = [key];
+    const groupEntries = [];
+    let maxLockedUntil = 0;
+
+    while (queue.length > 0) {
+      const currentKey = queue.shift();
+      if (visited.has(currentKey)) {
+        continue;
+      }
+      visited.add(currentKey);
+
+      const entry = state.cellStates.get(currentKey);
+      if (!entry || entry.lockedUntil <= state.now || clamp(entry.alpha || 0, 0, 1) < 0.999) {
+        continue;
+      }
+
+      groupEntries.push(entry);
+      maxLockedUntil = Math.max(maxLockedUntil, entry.lockedUntil);
+
+      for (const direction of directions) {
+        const neighborKey = createCellKey({
+          col: entry.cell.col + direction.col,
+          row: entry.cell.row + direction.row,
+        });
+        if (lockedKeys.has(neighborKey) && !visited.has(neighborKey)) {
+          queue.push(neighborKey);
+        }
+      }
+    }
+
+    if (groupEntries.length <= 1) {
+      continue;
+    }
+
+    for (const entry of groupEntries) {
+      entry.lockedUntil = maxLockedUntil;
+    }
+  }
+}
+
+function updateCellStates(deltaSeconds) {
+  state.revealCells.clear();
+  state.heldCells.clear();
+
+  if (!config.revealEnabled) {
+    state.cellStates.clear();
+    return;
+  }
+
+  synchronizeLinkedLockedCellGroups();
+
+  const chargeRates = buildCellChargeRateMap();
+  const decayMs = getEffectiveCellDecayMs();
+  const lockHoldMs = getEffectiveCellLockHoldMs();
+  const decayPerSecond = decayMs <= 0 ? Number.POSITIVE_INFINITY : 1000 / decayMs;
+  const keys = new Set([
+    ...state.cellStates.keys(),
+    ...chargeRates.keys(),
+  ]);
+
+  for (const key of keys) {
+    const chargeRate = Math.max(0, chargeRates.get(key) || 0);
+    let entry = state.cellStates.get(key);
+
+    if (!entry) {
+      const [colText, rowText] = key.split(',');
+      entry = {
+        cell: {
+          col: Number.parseInt(colText, 10),
+          row: Number.parseInt(rowText, 10),
+        },
+        alpha: 0,
+        lockedUntil: 0,
+      };
+    }
+
+    const isLocked = entry.lockedUntil > state.now;
+    if (isLocked) {
+      entry.alpha = 1;
+      state.cellStates.set(key, entry);
+      continue;
+    }
+
+    entry.lockedUntil = 0;
+    const decayAmount = Number.isFinite(decayPerSecond) ? decayPerSecond * deltaSeconds : 1;
+    const nextAlpha = clamp(entry.alpha + chargeRate * deltaSeconds - decayAmount, 0, 1);
+
+    entry.alpha = nextAlpha;
+
+    if (entry.alpha >= 0.999) {
+      entry.alpha = 1;
+      entry.lockedUntil = state.now + lockHoldMs;
+    }
+
+    if (entry.alpha <= 0.001 && chargeRate <= 0 && entry.lockedUntil <= state.now) {
+      state.cellStates.delete(key);
+      continue;
+    }
+
+    state.cellStates.set(key, entry);
+  }
+}
+
 function updateHeldCells(deltaSeconds) {
   if (!config.enclosureEnabled) {
     state.heldCells.clear();
@@ -2077,7 +3040,7 @@ function updateHeldCells(deltaSeconds) {
 
   const activeCells = new Map();
   const minCells = Math.max(1, Math.round(config.enclosureMinCells));
-  const maxCells = Math.max(minCells, Math.round(config.enclosureMaxCells));
+  const maxCells = Math.max(minCells, getEffectivePatchMaxCells());
   const minContributors = Math.max(1, Math.round(config.enclosureMinContributors));
 
   for (const region of buildEnclosedRegions()) {
@@ -2126,6 +3089,7 @@ function updateHeldCells(deltaSeconds) {
         contributorCount: activeCell.contributorCount,
         areaCellCount: activeCell.areaCellCount,
         boundaryEdgeCount: activeCell.boundaryEdgeCount,
+        isActive: true,
       };
     }
 
@@ -2141,6 +3105,7 @@ function updateHeldCells(deltaSeconds) {
     entry.contributorCount = activeCell.contributorCount;
     entry.areaCellCount = activeCell.areaCellCount;
     entry.boundaryEdgeCount = activeCell.boundaryEdgeCount;
+    entry.isActive = true;
     state.heldCells.set(key, entry);
   }
 
@@ -2161,6 +3126,7 @@ function updateHeldCells(deltaSeconds) {
 
     entry.alpha = lerp(entry.alpha, targetAlpha, step);
     entry.targetAlpha = targetAlpha;
+    entry.isActive = false;
 
     if (entry.alpha <= 0.001 && entry.targetAlpha <= 0.001) {
       state.heldCells.delete(key);
@@ -2541,8 +3507,8 @@ function drawRevealCells() {
     return;
   }
 
-  for (const entry of state.revealCells.values()) {
-    const alpha = getRevealCellAlpha(entry);
+  for (const entry of state.cellStates.values()) {
+    const alpha = clamp(entry.alpha || 0, 0, 1);
 
     if (alpha <= 0) {
       continue;
@@ -2580,45 +3546,7 @@ function drawRevealCells() {
 }
 
 function drawHeldCells() {
-  if (!config.enclosureEnabled) {
-    return;
-  }
-
-  for (const entry of state.heldCells.values()) {
-    const alpha = clamp(entry.alpha || 0, 0, 1);
-    if (alpha <= 0) {
-      continue;
-    }
-
-    const rect = getCellRect(entry.cell);
-    if (rect.width <= 0 || rect.height <= 0) {
-      continue;
-    }
-
-    const screenRect = worldRectToScreenRect(rect);
-
-    ctx.save();
-    ctx.globalAlpha = alpha * config.heldCellImageOpacity;
-    ctx.drawImage(
-      revealSourceCanvas,
-      rect.x,
-      rect.y,
-      rect.width,
-      rect.height,
-      screenRect.x,
-      screenRect.y,
-      screenRect.width,
-      screenRect.height,
-    );
-    ctx.restore();
-
-    if (config.heldCellTintOpacity > 0) {
-      ctx.save();
-      ctx.fillStyle = colorWithAlpha(config.heldCellTintColor, alpha * config.heldCellTintOpacity);
-      ctx.fillRect(screenRect.x, screenRect.y, screenRect.width, screenRect.height);
-      ctx.restore();
-    }
-  }
+  // Cell reveal now renders from a single cell-energy layer in drawRevealCells().
 }
 
 function drawRevealCellDebug() {
@@ -2666,34 +3594,26 @@ function drawHeldCellDebug() {
   }
 
   ctx.save();
+  ctx.font = '10px monospace';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
 
-  for (const entry of state.heldCells.values()) {
-    const alpha = clamp(entry.alpha || 0, 0, 1);
-    if (alpha <= 0) {
-      continue;
+  for (let col = 0; col < cellCountX(); col += 1) {
+    for (let row = 0; row < cellCountY(); row += 1) {
+      const cell = { col, row };
+      const rect = getCellRect(cell);
+      const screenRect = worldRectToScreenRect(rect);
+      const imageOpacity = clamp(getCellImageOpacity(cell), 0, 1);
+      const opacityPercent = Math.round(imageOpacity * 100);
+      const textAlpha = 0.18 + imageOpacity * 0.72;
+
+      ctx.fillStyle = `rgba(255, 255, 255, ${textAlpha})`;
+      ctx.fillText(
+        String(opacityPercent),
+        screenRect.x + screenRect.width * 0.5,
+        screenRect.y + screenRect.height * 0.5,
+      );
     }
-
-    const rect = getCellRect(entry.cell);
-    const screenRect = worldRectToScreenRect(rect);
-
-    ctx.strokeStyle = `rgba(126, 182, 255, ${0.24 + alpha * 0.56})`;
-    ctx.lineWidth = 1;
-    ctx.strokeRect(
-      screenRect.x + 0.5,
-      screenRect.y + 0.5,
-      Math.max(0, screenRect.width - 1),
-      Math.max(0, screenRect.height - 1),
-    );
-
-    ctx.fillStyle = `rgba(255, 255, 255, ${0.2 + alpha * 0.48})`;
-    ctx.font = '10px monospace';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillText(
-      `${entry.contributorCount}:${entry.areaCellCount}`,
-      screenRect.x + screenRect.width * 0.5,
-      screenRect.y + screenRect.height * 0.5,
-    );
   }
 
   ctx.restore();
@@ -2741,7 +3661,7 @@ function drawActiveEdges() {
   }
 
   for (const edge of state.activeEdges.values()) {
-    const alphaMultiplier = getActiveEdgeAlphaMultiplier(edge);
+    const alphaMultiplier = getActiveEdgeAlphaMultiplier(edge) * getHeldEdgeFadeMultiplier(edge);
 
     if (alphaMultiplier <= 0) {
       continue;
@@ -2834,17 +3754,19 @@ function drawNode(player) {
   );
 
   const timeSeconds = state.now * 0.001;
-  const pulse = 1 + Math.sin(timeSeconds * config.pulseSpeed) * config.nodePulseAmplitude;
+  const pulse = 1 + Math.sin(timeSeconds * getEffectiveNodePulseSpeed()) * config.nodePulseAmplitude;
   const visualScale = state.view.scale;
   const width = config.nodeWidth * pulse * spawnScale * visualScale;
   const height = config.nodeHeight * pulse * spawnScale * visualScale;
   const screenPoint = worldToScreenPoint({ x: player.x, y: player.y });
   const x = screenPoint.x - width * 0.5;
   const y = screenPoint.y - height * 0.5;
+  const effectiveGlowBlur = getEffectiveNodeGlowBlur();
+  const effectiveGlowOpacity = getEffectiveNodeGlowOpacity();
 
   ctx.save();
-  ctx.shadowBlur = config.nodeGlowBlur * visualScale;
-  ctx.shadowColor = colorWithAlpha(config.nodeGlowColor, config.nodeGlowOpacity * spawnAlpha);
+  ctx.shadowBlur = effectiveGlowBlur * visualScale;
+  ctx.shadowColor = colorWithAlpha(config.nodeGlowColor, effectiveGlowOpacity * spawnAlpha);
   ctx.fillStyle = colorWithAlpha(config.nodeColor, spawnAlpha);
   roundedRectPath(x, y, width, height, config.nodeRadius * visualScale);
   ctx.fill();
@@ -2973,21 +3895,52 @@ function drawTrailBuffOverlay() {
   }
 
   const playerCount = getEffectiveRoomPlayerCount();
-  const multiplier = getTrailLengthMultiplier();
-  const effectiveHoldMs = Math.max(0, config.activeEdgeHoldMs * multiplier);
+  const npcCount = countVisibleNpcPlayers();
+  const syntheticCount = countVisibleSyntheticLocalPlayers();
+  const cellEnergyScale = getCellEnergyEffectScale();
+  const coopBuffScale = getCoopBuffEffectScale();
+  const effectiveChargePerSecond = getEffectiveBaseCellChargePerSecond();
+  const chargeMultiplier = getEffectiveCellChargeMultiplier();
+  const effectiveRingFalloff = getEffectiveCellChargeRingFalloff();
+  const effectiveRingFloor = config.cellRingFloorEnabled ? getEffectiveCellRingFloor() : 0;
+  const effectiveMaxRing = getEffectiveCellChargeMaxRing();
+  const effectiveDecayMs = getEffectiveCellDecayMs();
+  const effectiveLockHoldMs = getEffectiveCellLockHoldMs();
+  const lockedCells = countLockedCellStates();
   const sourceLabel = state.network.roomId ? 'room' : 'local';
   const lines = [
-    'trail buff',
+    'coop buffs',
     `players ${playerCount} (${sourceLabel})`,
-    `hold base ${formatMetric(config.activeEdgeHoldMs)}ms`,
-    `buff/player ${formatMetric(config.trailLengthBuff)}`,
-    `mult ${formatMetric(multiplier)}x`,
-    `hold live ${formatMetric(effectiveHoldMs)}ms`,
+    `local synth ${syntheticCount}`,
+    `local npcs ${npcCount}`,
+    `energy scale ${formatMetric(cellEnergyScale)}x`,
+    `buff scale ${formatMetric(coopBuffScale)}x`,
+    `charge base ${formatMetric(config.cellChargePerSecond)}/s`,
+    `charge +/player ${formatMetric(config.cellChargeBuffPerPlayer)}x`,
+    `charge live ${formatMetric(effectiveChargePerSecond * chargeMultiplier)}/s`,
+    `falloff base ${formatMetric(config.cellChargeRingFalloff)}`,
+    `falloff +/player ${formatMetric(config.cellRingFalloffBonusPerPlayer)}`,
+    `falloff live ${formatMetric(effectiveRingFalloff)}`,
+    `floor ${config.cellRingFloorEnabled ? 'on' : 'off'}`,
+    `floor base ${formatMetric(config.cellRingFloor)}`,
+    `floor +/player ${formatMetric(config.cellRingFloorBonusPerPlayer)}`,
+    `floor live ${formatMetric(effectiveRingFloor)}`,
+    `rings base ${formatMetric(config.cellChargeMaxRing)}`,
+    `rings +/player ${formatMetric(config.cellRingCountBonusPerPlayer)}`,
+    `rings live ${formatMetric(effectiveMaxRing)}`,
+    `linked fade ${config.cellLinkedLockFade ? 'on' : 'off'}`,
+    `decay base ${formatMetric(config.cellDecayMs)}ms`,
+    `decay +/player ${formatMetric(config.cellDecayBonusMsPerPlayer)}ms`,
+    `decay live ${formatMetric(effectiveDecayMs)}ms`,
+    `lock base ${formatMetric(config.cellLockHoldMs)}ms`,
+    `lock +/player ${formatMetric(config.cellLockHoldBonusMsPerPlayer)}ms`,
+    `lock live ${formatMetric(effectiveLockHoldMs)}ms`,
+    `locked cells ${formatMetric(lockedCells)}`,
   ];
 
   const padding = 8;
   const lineHeight = 13;
-  const width = 190;
+  const width = 230;
   const height = padding * 2 + lines.length * lineHeight;
   const x = 8;
   const y = Math.max(8, viewport.height - height - 8);
@@ -3124,10 +4077,10 @@ function animate(now) {
   }
 
   updateLocalPlayer(deltaSeconds);
+  updateNpcPlayers(deltaSeconds);
   sendLocalPlayerState();
   clearExpiredActiveEdges();
-  updateRevealCells(deltaSeconds);
-  updateHeldCells(deltaSeconds);
+  updateCellStates(deltaSeconds);
   render();
 
   requestAnimationFrame(animate);
@@ -3136,6 +4089,7 @@ function animate(now) {
 function setupGui() {
   const gui = new GUI({ title: 'Grid Controls' });
   guiInstance = gui;
+  ensureGuiHelpOverlay(gui);
 
   const backgroundFolder = gui.addFolder('Background');
   backgroundFolder.add(config, 'backgroundGradientEnabled').name('Enabled');
@@ -3208,8 +4162,42 @@ function setupGui() {
   activeEdgeFolder.close();
 
   const buffsFolder = gui.addFolder('Buffs');
-  buffsFolder.add(config, 'trailLengthBuff', 0, 4, 0.01).name('Trail Length Buff');
-  buffsFolder.close();
+  attachGuiHelp(
+    buffsFolder.add(config, 'coopBuffEffect', 0, 3, 0.05).name('Co-op Buff Effect'),
+    GUI_HELP_TEXT.coopBuffEffect,
+  );
+  attachGuiHelp(
+    buffsFolder.add(config, 'cellChargeBuffPerPlayer', 0, 2, 0.05).name('Charge +/Player'),
+    GUI_HELP_TEXT.cellChargeBuffPerPlayer,
+  );
+  attachGuiHelp(
+    buffsFolder.add(config, 'cellRingFalloffBonusPerPlayer', 0, 0.5, 0.05).name('Falloff +/Player'),
+    GUI_HELP_TEXT.cellRingFalloffBonusPerPlayer,
+  );
+  attachGuiHelp(
+    buffsFolder.add(config, 'cellRingFloorBonusPerPlayer', 0, 0.5, 0.05).name('Floor +/Player'),
+    GUI_HELP_TEXT.cellRingFloorBonusPerPlayer,
+  );
+  attachGuiHelp(
+    buffsFolder.add(config, 'cellRingCountBonusPerPlayer', 0, 4, 0.25).name('Rings +/Player'),
+    GUI_HELP_TEXT.cellRingCountBonusPerPlayer,
+  );
+  attachGuiHelp(
+    buffsFolder.add(config, 'cellDecayBonusMsPerPlayer', 0, 4000, 50).name('Decay +/Player'),
+    GUI_HELP_TEXT.cellDecayBonusMsPerPlayer,
+  );
+  attachGuiHelp(
+    buffsFolder.add(config, 'cellLockHoldBonusMsPerPlayer', 0, 4000, 50).name('Hold +/Player'),
+    GUI_HELP_TEXT.cellLockHoldBonusMsPerPlayer,
+  );
+  buffsFolder.open();
+
+  const npcFolder = gui.addFolder('NPCs');
+  attachGuiHelp(
+    npcFolder.add(config, 'npcCount', 0, 5, 1).name('NPC Count'),
+    GUI_HELP_TEXT.npcCount,
+  );
+  npcFolder.open();
 
   const revealFolder = gui.addFolder('Reveal');
   revealFolder.add(config, 'revealEnabled').name('Enabled');
@@ -3277,48 +4265,77 @@ revealFolder.add(config, 'revealImageOffsetX', -4000, 4000, 1)
       syncRoomWorldFromConfig();
     });
 
-  revealFolder.add(config, 'revealIncludeCurrentSegment').name('Live Segment');
-  revealFolder.add(config, 'revealEdgeActiveThreshold', 0, 1, 0.01).name('Active Threshold');
-  revealFolder.add(config, 'revealOpacity1', 0, 1, 0.01).name('1 Edge Alpha');
-  revealFolder.add(config, 'revealOpacity2', 0, 1, 0.01).name('2 Edge Alpha');
-  revealFolder.add(config, 'revealOpacity3', 0, 1, 0.01).name('3 Edge Alpha');
-  revealFolder.add(config, 'revealOpacity4', 0, 1, 0.01).name('4 Edge Alpha');
-  revealFolder.add(config, 'revealClosedBonus', 0, 0.25, 0.01).name('Closed Bonus');
-  revealFolder.add(config, 'revealFadeInMs', 0, 1200, 10).name('Fade In');
-  revealFolder.add(config, 'revealHoldMs', 0, 4000, 10).name('Hold Time');
-  revealFolder.add(config, 'revealFadeOutMs', 0, 4000, 10).name('Fade Out');
   revealFolder.add(config, 'revealImageOpacity', 0, 1, 0.01).name('Image Alpha');
   revealFolder.addColor(config, 'revealTintColor').name('Tint');
   revealFolder.add(config, 'revealTintOpacity', 0, 1, 0.01).name('Tint Alpha');
   revealFolder.close();
 
-  const enclosureFolder = gui.addFolder('Enclosure');
-  enclosureFolder.add(config, 'enclosureEnabled').name('Enabled');
-  enclosureFolder.add(config, 'enclosureIncludeCurrentSegment').name('Live Segment');
-  enclosureFolder.add(config, 'enclosureEdgeActiveThreshold', 0, 1, 0.01).name('Edge Threshold');
-  enclosureFolder.add(config, 'enclosureMinCells', 1, 200, 1).name('Min Cells');
-  enclosureFolder.add(config, 'enclosureMaxCells', 1, 2000, 1).name('Max Cells');
-  enclosureFolder.add(config, 'enclosureMinContributors', 1, 5, 1).name('Min Players');
-  enclosureFolder.add(config, 'heldCellOpacity', 0, 1, 0.01).name('Held Alpha');
-  enclosureFolder.add(config, 'heldCellContributorOpacityBonus', 0, 0.5, 0.01).name('Player Alpha+');
-  enclosureFolder.add(config, 'heldCellFadeInMs', 0, 2000, 10).name('Fade In');
-  enclosureFolder.add(config, 'heldCellHoldMs', 0, 4000, 10).name('Hold Time');
-  enclosureFolder.add(config, 'heldCellContributorHoldBonusMs', 0, 4000, 10).name('Player Hold+');
-  enclosureFolder.add(config, 'heldCellFadeOutMs', 0, 6000, 10).name('Fade Out');
-  enclosureFolder.add(config, 'heldCellImageOpacity', 0, 1, 0.01).name('Image Alpha');
-  enclosureFolder.addColor(config, 'heldCellTintColor').name('Tint');
-  enclosureFolder.add(config, 'heldCellTintOpacity', 0, 1, 0.01).name('Tint Alpha');
-  enclosureFolder.close();
+  const cellEnergyFolder = gui.addFolder('Cell Energy');
+  attachGuiHelp(
+    cellEnergyFolder.add(config, 'cellEnergyEffect', 0, 3, 0.05).name('Cell Energy Effect'),
+    GUI_HELP_TEXT.cellEnergyEffect,
+  );
+  attachGuiHelp(
+    cellEnergyFolder.add(config, 'cellChargePerSecond', 0, 4, 0.05).name('Core Charge /s'),
+    GUI_HELP_TEXT.cellChargePerSecond,
+  );
+  attachGuiHelp(
+    cellEnergyFolder.add(config, 'cellChargeRingFalloff', 0, 1, 0.05).name('Ring Falloff'),
+    GUI_HELP_TEXT.cellChargeRingFalloff,
+  );
+  attachGuiHelp(
+    cellEnergyFolder.add(config, 'cellRingFloorEnabled').name('Ring Floor Enabled'),
+    GUI_HELP_TEXT.cellRingFloorEnabled,
+  );
+  attachGuiHelp(
+    cellEnergyFolder.add(config, 'cellRingFloor', 0, 1, 0.05).name('Ring Floor'),
+    GUI_HELP_TEXT.cellRingFloor,
+  );
+  attachGuiHelp(
+    cellEnergyFolder.add(config, 'cellChargeMaxRing', 0, 6, 1).name('Ring Count'),
+    GUI_HELP_TEXT.cellChargeMaxRing,
+  );
+  attachGuiHelp(
+    cellEnergyFolder.add(config, 'cellDecayMs', 100, 8000, 50).name('Decay Time'),
+    GUI_HELP_TEXT.cellDecayMs,
+  );
+  attachGuiHelp(
+    cellEnergyFolder.add(config, 'cellLockHoldMs', 0, 8000, 50).name('Lock Hold'),
+    GUI_HELP_TEXT.cellLockHoldMs,
+  );
+  attachGuiHelp(
+    cellEnergyFolder.add(config, 'cellLinkedLockFade').name('Linked Lock Fade'),
+    GUI_HELP_TEXT.cellLinkedLockFade,
+  );
+  cellEnergyFolder.open();
 
   const debugFolder = gui.addFolder('Debug');
-  debugFolder.add(config, 'showTarget').name('Target');
-  debugFolder.add(config, 'showIntersections').name('Intersections');
-  debugFolder.add(config, 'showRevealCells').name('Reveal Cells');
-  debugFolder.add(config, 'showHeldCells').name('Held Cells');
-  debugFolder.add(config, 'showTrailBuffOverlay').name('Trail Buff');
-  debugFolder.add(config, 'showPlayerIds').name('Player IDs');
-  debugFolder.add(config, 'showViewportDebug').name('Viewport Metrics');
-  debugFolder.close();
+  attachGuiHelp(debugFolder.add(config, 'showTarget').name('Target'), GUI_HELP_TEXT.showTarget);
+  attachGuiHelp(
+    debugFolder.add(config, 'showIntersections').name('Intersections'),
+    GUI_HELP_TEXT.showIntersections,
+  );
+  attachGuiHelp(
+    debugFolder.add(config, 'showRevealCells').name('Reveal Cells'),
+    GUI_HELP_TEXT.showRevealCells,
+  );
+  attachGuiHelp(
+    debugFolder.add(config, 'showHeldCells').name('Cell Opacity'),
+    GUI_HELP_TEXT.showHeldCells,
+  );
+  attachGuiHelp(
+    debugFolder.add(config, 'showTrailBuffOverlay').name('Co-op Overlay'),
+    GUI_HELP_TEXT.showTrailBuffOverlay,
+  );
+  attachGuiHelp(
+    debugFolder.add(config, 'showPlayerIds').name('Player IDs'),
+    GUI_HELP_TEXT.showPlayerIds,
+  );
+  attachGuiHelp(
+    debugFolder.add(config, 'showViewportDebug').name('Viewport Metrics'),
+    GUI_HELP_TEXT.showViewportDebug,
+  );
+  debugFolder.open();
 
   updateRevealVignetteGuiState();
 
@@ -3345,8 +4362,8 @@ revealFolder.add(config, 'revealImageOffsetX', -4000, 4000, 1)
 
   const utilitiesFolder = gui.addFolder('Utilities');
   utilitiesFolder.add(actions, 'clearActiveEdges').name('Clear Active Edges');
-  utilitiesFolder.add(actions, 'clearRevealCells').name('Clear Reveal Cells');
-  utilitiesFolder.add(actions, 'clearHeldCells').name('Clear Held Cells');
+  utilitiesFolder.add(actions, 'clearRevealCells').name('Clear Cell States');
+  utilitiesFolder.add(actions, 'clearHeldCells').name('Clear Legacy Cells');
   utilitiesFolder.add(actions, 'randomizeSpawn').name('Random Spawn');
   utilitiesFolder.add(actions, 'reconnectNetwork').name('Reconnect Network');
   utilitiesFolder.add(actions, 'disconnectNetwork').name('Disconnect Network');
@@ -3357,9 +4374,9 @@ revealFolder.add(config, 'revealImageOffsetX', -4000, 4000, 1)
   utilitiesFolder.add(actions, 'pasteConfig').name('Paste Config');
   utilitiesFolder.close();
 
-  gui.close();
+  bindGuiHelpFromMap(gui);
   applyGuiLayout(gui);
-} 
+}
 
 resize();
 setupGui();

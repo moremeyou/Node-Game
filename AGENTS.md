@@ -32,21 +32,25 @@ Do not introduce these unless explicitly requested:
 The current prototype already has working versions of:
 
 - fullscreen canvas
-- black background
+- black / gradient background
 - stable grid
 - node movement snapped to grid intersections
 - Manhattan pathing
-- active edge trails / glow
+- active edge trails / glow as visual feedback
 - hidden image reveal
+- node-driven cell energy / decay / lock behavior
+- optional linked fade for connected locked cells
 - first-pass canonical room/world metadata from the server
 - viewport rendering through a world-to-screen transform
 - base grid rendering beyond the fixed image/reveal room
 - node movement beyond the fixed image/reveal bounds
 - world-anchored reveal image with configurable edge-distance vignette
+- local-only NPC helpers for co-op tuning
 - auto-matched multiplayer rooms
 - max 5 players per room
 - WebSocket networking
 - lil-gui controls for many visual and behavioral parameters
+- lil-gui property help descriptions for current tuning sections
 
 Treat existing project files as the source of truth.
 
@@ -120,8 +124,9 @@ These are not complete yet:
 - server does not yet fully simulate or authoritatively validate movement paths
 - server protection/rate limiting needs to become strict before public use
 - room metadata is currently hardcoded in `server.cjs`, not loaded from a private config file
-- reveal/held shape progress is still client-derived from active edges
-- cooperative enclosed-shape hold/reveal mechanics still need design/prototyping
+- reveal/cell progress is still client-derived
+- cooperative revealed cell state is still local/client-owned
+- the older enclosed-shape logic is no longer the primary reveal model and may be removed later if testing continues to favor cell energy
 
 ### Intended direction from here
 
@@ -134,7 +139,7 @@ The project should continue toward a canonical shared-room model where:
 - server owns room metadata
 - clients render the same room scaled into their viewport
 - the browser becomes a window onto the room
-- cooperative held/revealed cell state eventually becomes server-owned after the mechanic feels right
+- cooperative revealed cell state eventually becomes server-owned after the mechanic feels right
 - strict server validation and anti-spam hardening are added after core mechanics settle
 
 Do not make short-term changes that deepen dependency on per-client viewport-defined gameplay space unless explicitly requested.
@@ -199,6 +204,7 @@ Keep these in mind:
 
 - it is easy to edit the wrong local repo/folder
 - Vite only updates from the real project root
+- Vite dev server must restart when new Vite config defines are added
 - `server.cjs` does not auto-restart unless running in watch mode
 - GitHub Desktop can point at the wrong local clone if folder structure is messy
 
@@ -215,7 +221,7 @@ Frontend:
 For LAN testing, other machines on the same network open:
 `http://YOUR-IP:5173`
 
-The frontend is expected to connect to the websocket server from page URL / configured WS logic.
+The frontend is expected to connect to the websocket server on `8080` based on the page URL / configured WS logic.
 
 ## Default working style
 
