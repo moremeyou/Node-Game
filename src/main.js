@@ -98,7 +98,6 @@ const GUI_HELP_TEXT = {
   cellLockHoldBonusMsPerPlayer: 'Extra per-player hold time after a cell reaches 100.',
   showTarget: 'Shows the current target intersection for the local player.',
   showIntersections: 'Shows the world-space grid intersections used for movement and node snapping.',
-  showRevealCells: 'Legacy reveal debug from the previous edge-driven model.',
   showHeldCells: 'Shows each room cell as a 0-100 image-opacity value from the current cell-energy system.',
   showTrailBuffOverlay: 'Shows live co-op and cell-energy buff values in the lower-left overlay.',
   showPlayerIds: 'Draws each visible player id above its node.',
@@ -408,7 +407,6 @@ const config = {
   activeEdgeGlowBlur: 32,
   activeEdgeHoldMs: 50,
   activeEdgeFadeMs: 670,
-  trailLengthBuff: 0,
   npcCount: 1,
   revealEnabled: true,
   revealImageSrc: "/teaser-hidden.jpg",
@@ -423,39 +421,9 @@ const config = {
   revealVignetteEdgeOpacity: 1,
   revealVignetteSize: 100,
   revealVignetteCurve: 1,
-  revealIncludeCurrentSegment: true,
-  revealEdgeActiveThreshold: 0.01,
-  revealOpacity1: 0.1,
-  revealOpacity2: 0.24,
-  revealOpacity3: 0.43,
-  revealOpacity4: 0.54,
-  revealClosedBonus: 0.24,
-  revealFadeInMs: 0,
-  revealHoldMs: 0,
-  revealFadeOutMs: 160,
   revealImageOpacity: 1,
   revealTintColor: "#000000",
   revealTintOpacity: 0,
-  enclosureEnabled: true,
-  enclosureIncludeCurrentSegment: false,
-  enclosureEdgeActiveThreshold: 0.55,
-  enclosureEdgeHoldMs: 900,
-  enclosureEdgeFadeMs: 900,
-  enclosureMinCells: 4,
-  enclosureMaxCells: 12,
-  roomPatchMaxCellsPerPlayer: 12,
-  enclosureMinContributors: 1,
-  heldCellOpacity: 0.72,
-  heldCellContributorOpacityBonus: 0.14,
-  heldCellFadeInMs: 0,
-  heldCellHoldMs: 1600,
-  heldCellContributorHoldBonusMs: 1200,
-  heldCellFadeOutMs: 1200,
-  heldEdgeFadeEnabled: true,
-  heldEdgeFadeMinAlpha: 0.22,
-  heldCellImageOpacity: 1,
-  heldCellTintColor: "#7eb6ff",
-  heldCellTintOpacity: 0,
   cellChargePerSecond: 1.1,
   cellChargeRingFalloff: 0.5,
   cellRingFloorEnabled: true,
@@ -475,7 +443,6 @@ const config = {
   gridOverReveal: true,
   showTarget: false,
   showIntersections: true,
-  showRevealCells: false,
   showHeldCells: false,
   showTrailBuffOverlay: false,
   showPlayerIds: false,
@@ -607,8 +574,6 @@ const state = {
   players: new Map(),
   activeEdges: new Map(),
   cellStates: new Map(),
-  revealCells: new Map(),
-  heldCells: new Map(),
   room: {
     world: createDefaultRoomWorld(),
   },
@@ -844,12 +809,8 @@ const actions = {
   clearActiveEdges() {
     state.activeEdges.clear();
   },
-  clearRevealCells() {
+  clearCellStates() {
     state.cellStates.clear();
-    state.revealCells.clear();
-  },
-  clearHeldCells() {
-    state.heldCells.clear();
   },
   randomizeSpawn() {
     const player = getLocalPlayer();
@@ -1100,12 +1061,6 @@ function getEffectiveRoomPlayerCount() {
   return Math.max(1, visiblePlayers);
 }
 
-function getTrailLengthMultiplier() {
-  const playerCount = getEffectiveRoomPlayerCount();
-  const perExtraPlayerBuff = Math.max(0, Number(config.trailLengthBuff) || 0);
-  return 1 + perExtraPlayerBuff * Math.max(0, playerCount - 1);
-}
-
 function getEffectiveCoopExtraPlayers() {
   return Math.max(0, getEffectiveRoomPlayerCount() - 1);
 }
@@ -1191,13 +1146,6 @@ function getEffectiveNodeGlowBlur() {
   return Math.max(0, (Number(config.nodeGlowBlur) || 0) * (playerCount / 3));
 }
 
-function getEffectivePatchMaxCells() {
-  const baseMaxCells = Math.max(1, Math.round(config.enclosureMaxCells));
-  const playerCount = getEffectiveRoomPlayerCount();
-  const perExtraPlayerBonus = Math.max(0, Math.round(config.roomPatchMaxCellsPerPlayer || 0));
-  return Math.max(1, baseMaxCells + perExtraPlayerBonus * Math.max(0, playerCount - 1));
-}
-
 function setNetworkStatus(status) {
   state.network.status = status;
   updateNetworkInfo();
@@ -1266,25 +1214,8 @@ function removeRemotePlayers() {
   }
 }
 
-function removeRemoteEdgeSources() {
-  for (const [key, edge] of state.activeEdges.entries()) {
-    for (const sourceId of edge.sources.keys()) {
-      if (sourceId === LOCAL_PLAYER_ID || isDebugPlayerId(sourceId)) {
-        continue;
-      }
-
-      edge.sources.delete(sourceId);
-    }
-
-    if (edge.sources.size === 0) {
-      state.activeEdges.delete(key);
-    }
-  }
-}
-
 function resetRemoteState() {
   removeRemotePlayers();
-  removeRemoteEdgeSources();
   state.network.roomId = null;
   state.network.serverPlayerId = null;
   state.network.playerCount = 1;
@@ -1435,51 +1366,6 @@ function applyRoomPlayersSnapshot(players) {
   }
 }
 
-function applyRoomEdgesSnapshot(edges) {
-  removeRemoteEdgeSources();
-
-  for (const edgePayload of edges) {
-    if (!edgePayload || !edgePayload.start || !edgePayload.end) {
-      continue;
-    }
-
-    const start = cloneIntersection(edgePayload.start);
-    const end = cloneIntersection(edgePayload.end);
-
-    if (!start || !end) {
-      continue;
-    }
-
-    const key = createSegmentKey(start, end);
-    let edge = state.activeEdges.get(key);
-
-    if (!edge) {
-      edge = {
-        start: { ...start },
-        end: { ...end },
-        sources: new Map(),
-      };
-    }
-
-    for (const sourcePayload of edgePayload.sources || []) {
-      const mappedId = normalizeIncomingPlayerId(sourcePayload.playerId);
-
-      if (mappedId === LOCAL_PLAYER_ID) {
-        continue;
-      }
-
-      const ageMs = Math.max(0, Number(sourcePayload.ageMs) || 0);
-      edge.sources.set(mappedId, {
-        lastTouchedAt: state.now - ageMs,
-      });
-    }
-
-    if (edge.sources.size > 0) {
-      state.activeEdges.set(key, edge);
-    }
-  }
-}
-
 function handleNetworkMessage(message) {
   switch (message.type) {
     case 'welcome': {
@@ -1516,7 +1402,6 @@ function handleNetworkMessage(message) {
       }
       applyRoomWorld(message.world);
       applyRoomPlayersSnapshot(Array.isArray(message.players) ? message.players : []);
-      applyRoomEdgesSnapshot(Array.isArray(message.activeEdges) ? message.activeEdges : []);
       if (Number.isFinite(message.playerCount)) {
         state.network.playerCount = message.playerCount;
       }
@@ -1537,16 +1422,6 @@ function handleNetworkMessage(message) {
       if (isRemotePlayerId(mappedId)) {
         state.players.delete(mappedId);
         updateNetworkInfo();
-      }
-      break;
-    }
-
-    case 'edge_touch': {
-      if (message.playerId && message.start && message.end) {
-        const mappedId = normalizeIncomingPlayerId(message.playerId);
-        if (mappedId !== LOCAL_PLAYER_ID) {
-          touchActiveEdge(mappedId, message.start, message.end, state.now);
-        }
       }
       break;
     }
@@ -1691,18 +1566,6 @@ function sendLocalPlayerState(force = false) {
   sendNetworkMessage({
     type: 'player_state',
     player: serializePlayerForNetwork(player),
-  });
-}
-
-function sendEdgeTouch(start, end) {
-  if (!config.networkEnabled) {
-    return;
-  }
-
-  sendNetworkMessage({
-    type: 'edge_touch',
-    start: { ...start },
-    end: { ...end },
   });
 }
 
@@ -1960,16 +1823,8 @@ function getEdgeSourceStrengthMultiplier(source, holdMs, fadeMs) {
 function getActiveEdgeSourceAlphaMultiplier(source) {
   return getEdgeSourceStrengthMultiplier(
     source,
-    config.activeEdgeHoldMs * getTrailLengthMultiplier(),
+    config.activeEdgeHoldMs,
     config.activeEdgeFadeMs,
-  );
-}
-
-function getEnclosureEdgeSourceStrengthMultiplier(source) {
-  return getEdgeSourceStrengthMultiplier(
-    source,
-    config.enclosureEdgeHoldMs,
-    config.enclosureEdgeFadeMs,
   );
 }
 
@@ -1986,9 +1841,7 @@ function getActiveEdgeAlphaMultiplier(edge) {
 function clearExpiredActiveEdges() {
   for (const [key, edge] of state.activeEdges.entries()) {
     for (const [sourceId, source] of edge.sources.entries()) {
-      const visualStrength = getActiveEdgeSourceAlphaMultiplier(source);
-      const enclosureStrength = getEnclosureEdgeSourceStrengthMultiplier(source);
-      if (visualStrength <= 0 && enclosureStrength <= 0) {
+      if (getActiveEdgeSourceAlphaMultiplier(source) <= 0) {
         edge.sources.delete(sourceId);
       }
     }
@@ -2278,7 +2131,7 @@ function refreshPathIfNeeded(player) {
   startNextSegment(player);
 }
 
-function updateDrivenPlayer(player, deltaSeconds, { sendNetworkEdges = false } = {}) {
+function updateDrivenPlayer(player, deltaSeconds) {
   if (!player || !player.visible) {
     return;
   }
@@ -2318,9 +2171,6 @@ function updateDrivenPlayer(player, deltaSeconds, { sendNetworkEdges = false } =
     player.current = { ...segment.endIntersection };
 
     touchActiveEdge(player.id, segment.startIntersection, segment.endIntersection);
-    if (sendNetworkEdges) {
-      sendEdgeTouch(segment.startIntersection, segment.endIntersection);
-    }
 
     player.segment = null;
 
@@ -2366,7 +2216,7 @@ function updateLocalPlayer(deltaSeconds) {
     refreshPointerTargetFromStoredPointer();
   }
 
-  updateDrivenPlayer(player, deltaSeconds, { sendNetworkEdges: true });
+  updateDrivenPlayer(player, deltaSeconds);
 }
 
 function updateNpcPlayers(deltaSeconds) {
@@ -2388,361 +2238,12 @@ function updateNpcPlayers(deltaSeconds) {
     }
 
     advanceNpcWaypointPlan(player);
-    updateDrivenPlayer(player, deltaSeconds, { sendNetworkEdges: false });
+    updateDrivenPlayer(player, deltaSeconds);
   }
 
   if (npcPlanComplete(lead)) {
     setNpcPatchCell(chooseNpcPatchCell(state.npc.patchCell || state.npc.lastPatchCell));
   }
-}
-
-function buildActiveEdgeStrengthMap() {
-  const strengths = new Map();
-
-  for (const [key, edge] of state.activeEdges.entries()) {
-    const alphaMultiplier = getActiveEdgeAlphaMultiplier(edge);
-    if (alphaMultiplier <= 0) {
-      continue;
-    }
-
-    strengths.set(key, Math.max(strengths.get(key) || 0, alphaMultiplier));
-  }
-
-  if (config.revealIncludeCurrentSegment) {
-    for (const player of getRenderablePlayers()) {
-      if (!player.segment) {
-        continue;
-      }
-
-      const key = createSegmentKey(
-        player.segment.startIntersection,
-        player.segment.endIntersection,
-      );
-      const progressStrength = clamp(player.segment.progress, 0, 1);
-
-      if (progressStrength > 0) {
-        strengths.set(key, Math.max(strengths.get(key) || 0, progressStrength));
-      }
-    }
-  }
-
-  return strengths;
-}
-
-function buildEdgeActivitySnapshot({ includeCurrentSegment = false } = {}) {
-  const snapshot = new Map();
-
-  function touchSnapshotEntry(key, strength, sourceIds) {
-    if (strength <= 0) {
-      return;
-    }
-
-    let entry = snapshot.get(key);
-    if (!entry) {
-      entry = {
-        strength: 0,
-        sourceIds: new Set(),
-      };
-      snapshot.set(key, entry);
-    }
-
-    entry.strength = Math.max(entry.strength, strength);
-
-    for (const sourceId of sourceIds) {
-      entry.sourceIds.add(sourceId);
-    }
-  }
-
-  for (const [key, edge] of state.activeEdges.entries()) {
-    let strength = 0;
-    for (const source of edge.sources.values()) {
-      strength = Math.max(strength, getEnclosureEdgeSourceStrengthMultiplier(source));
-    }
-    if (strength <= 0) {
-      continue;
-    }
-
-    touchSnapshotEntry(key, strength, edge.sources.keys());
-  }
-
-  if (!includeCurrentSegment) {
-    return snapshot;
-  }
-
-  for (const player of getRenderablePlayers()) {
-    if (!player.segment) {
-      continue;
-    }
-
-    const key = createSegmentKey(
-      player.segment.startIntersection,
-      player.segment.endIntersection,
-    );
-    const strength = clamp(player.segment.progress, 0, 1);
-
-    touchSnapshotEntry(key, strength, [player.id]);
-  }
-
-  return snapshot;
-}
-
-function getCellBorderSegmentKeys(cell) {
-  const topLeft = { col: cell.col, row: cell.row };
-  const topRight = { col: cell.col + 1, row: cell.row };
-  const bottomLeft = { col: cell.col, row: cell.row + 1 };
-  const bottomRight = { col: cell.col + 1, row: cell.row + 1 };
-
-  return {
-    top: createSegmentKey(topLeft, topRight),
-    right: createSegmentKey(topRight, bottomRight),
-    bottom: createSegmentKey(bottomLeft, bottomRight),
-    left: createSegmentKey(topLeft, bottomLeft),
-  };
-}
-
-function getBarrierSegmentKeyBetweenCells(aCol, aRow, bCol, bRow, cols, rows) {
-  const deltaCol = bCol - aCol;
-  const deltaRow = bRow - aRow;
-
-  if (Math.abs(deltaCol) + Math.abs(deltaRow) !== 1) {
-    return null;
-  }
-
-  if (deltaCol !== 0) {
-    const borderCol = Math.max(aCol, bCol);
-    const row = aRow;
-
-    if (row < 0 || row >= rows || borderCol < 0 || borderCol > cols) {
-      return null;
-    }
-
-    return createSegmentKey(
-      { col: borderCol, row },
-      { col: borderCol, row: row + 1 },
-    );
-  }
-
-  const borderRow = Math.max(aRow, bRow);
-  const col = aCol;
-
-  if (col < 0 || col >= cols || borderRow < 0 || borderRow > rows) {
-    return null;
-  }
-
-  return createSegmentKey(
-    { col, row: borderRow },
-    { col: col + 1, row: borderRow },
-  );
-}
-
-function buildEnclosedRegions() {
-  const cols = cellCountX();
-  const rows = cellCountY();
-  if (cols <= 0 || rows <= 0) {
-    return [];
-  }
-
-  const edgeSnapshot = buildEdgeActivitySnapshot({
-    includeCurrentSegment: config.enclosureIncludeCurrentSegment,
-  });
-  const barrierThreshold = clamp(config.enclosureEdgeActiveThreshold, 0, 1);
-  const barrierEntries = new Map();
-
-  for (const [key, entry] of edgeSnapshot.entries()) {
-    if (entry.strength >= barrierThreshold) {
-      barrierEntries.set(key, entry);
-    }
-  }
-
-  const expandedCols = cols + 2;
-  const expandedRows = rows + 2;
-  const outsideReachable = new Uint8Array(expandedCols * expandedRows);
-  const regionVisited = new Uint8Array(cols * rows);
-  const directions = [
-    { col: 1, row: 0 },
-    { col: -1, row: 0 },
-    { col: 0, row: 1 },
-    { col: 0, row: -1 },
-  ];
-
-  function expandedIndex(expandedCol, expandedRow) {
-    return expandedRow * expandedCols + expandedCol;
-  }
-
-  function roomIndex(col, row) {
-    return row * cols + col;
-  }
-
-  const outsideQueue = [{ col: 0, row: 0 }];
-  outsideReachable[expandedIndex(0, 0)] = 1;
-
-  while (outsideQueue.length > 0) {
-    const cell = outsideQueue.shift();
-    const logicalCol = cell.col - 1;
-    const logicalRow = cell.row - 1;
-
-    for (const direction of directions) {
-      const nextExpandedCol = cell.col + direction.col;
-      const nextExpandedRow = cell.row + direction.row;
-
-      if (
-        nextExpandedCol < 0
-        || nextExpandedCol >= expandedCols
-        || nextExpandedRow < 0
-        || nextExpandedRow >= expandedRows
-      ) {
-        continue;
-      }
-
-      const nextIndex = expandedIndex(nextExpandedCol, nextExpandedRow);
-      if (outsideReachable[nextIndex]) {
-        continue;
-      }
-
-      const nextLogicalCol = nextExpandedCol - 1;
-      const nextLogicalRow = nextExpandedRow - 1;
-      const barrierKey = getBarrierSegmentKeyBetweenCells(
-        logicalCol,
-        logicalRow,
-        nextLogicalCol,
-        nextLogicalRow,
-        cols,
-        rows,
-      );
-
-      if (barrierKey && barrierEntries.has(barrierKey)) {
-        continue;
-      }
-
-      outsideReachable[nextIndex] = 1;
-      outsideQueue.push({
-        col: nextExpandedCol,
-        row: nextExpandedRow,
-      });
-    }
-  }
-
-  const regions = [];
-
-  for (let row = 0; row < rows; row += 1) {
-    for (let col = 0; col < cols; col += 1) {
-      const roomCellIndex = roomIndex(col, row);
-      const expandedCellIndex = expandedIndex(col + 1, row + 1);
-
-      if (regionVisited[roomCellIndex] || outsideReachable[expandedCellIndex]) {
-        continue;
-      }
-
-      const regionQueue = [{ col, row }];
-      const regionCells = [];
-      const regionCellKeys = new Set();
-      regionVisited[roomCellIndex] = 1;
-
-      while (regionQueue.length > 0) {
-        const current = regionQueue.shift();
-        const currentKey = createCellKey(current);
-        regionCells.push(current);
-        regionCellKeys.add(currentKey);
-
-        for (const direction of directions) {
-          const nextCol = current.col + direction.col;
-          const nextRow = current.row + direction.row;
-
-          if (nextCol < 0 || nextCol >= cols || nextRow < 0 || nextRow >= rows) {
-            continue;
-          }
-
-          const barrierKey = getBarrierSegmentKeyBetweenCells(
-            current.col,
-            current.row,
-            nextCol,
-            nextRow,
-            cols,
-            rows,
-          );
-
-          if (barrierKey && barrierEntries.has(barrierKey)) {
-            continue;
-          }
-
-          const nextRoomIndex = roomIndex(nextCol, nextRow);
-          if (regionVisited[nextRoomIndex]) {
-            continue;
-          }
-
-          regionVisited[nextRoomIndex] = 1;
-          regionQueue.push({ col: nextCol, row: nextRow });
-        }
-      }
-
-      const boundaryEdgeKeys = new Set();
-      const contributorIds = new Set();
-
-      for (const cell of regionCells) {
-        for (const direction of directions) {
-          const nextCol = cell.col + direction.col;
-          const nextRow = cell.row + direction.row;
-          const barrierKey = getBarrierSegmentKeyBetweenCells(
-            cell.col,
-            cell.row,
-            nextCol,
-            nextRow,
-            cols,
-            rows,
-          );
-
-          if (!barrierKey || !barrierEntries.has(barrierKey)) {
-            continue;
-          }
-
-          if (
-            nextCol >= 0
-            && nextCol < cols
-            && nextRow >= 0
-            && nextRow < rows
-            && regionCellKeys.has(createCellKey({ col: nextCol, row: nextRow }))
-          ) {
-            continue;
-          }
-
-          boundaryEdgeKeys.add(barrierKey);
-
-          for (const contributorId of barrierEntries.get(barrierKey).sourceIds) {
-            contributorIds.add(contributorId);
-          }
-        }
-      }
-
-      if (boundaryEdgeKeys.size === 0) {
-        continue;
-      }
-
-      regions.push({
-        cells: regionCells,
-        areaCellCount: regionCells.length,
-        boundaryEdgeCount: boundaryEdgeKeys.size,
-        contributorCount: contributorIds.size,
-      });
-    }
-  }
-
-  return regions;
-}
-
-function getHeldCellTargetAlpha(contributorCount) {
-  const contributorBonus = Math.max(0, contributorCount - 1)
-    * Math.max(0, config.heldCellContributorOpacityBonus);
-  return clamp(config.heldCellOpacity + contributorBonus, 0, 1);
-}
-
-function getHeldCellVisualAlpha(cell) {
-  const entry = state.heldCells.get(createCellKey(cell));
-  return entry ? clamp(entry.alpha || 0, 0, 1) : 0;
-}
-
-function getRevealCellVisualAlpha(cell) {
-  const entry = state.revealCells.get(createCellKey(cell));
-  return entry ? clamp(entry.alpha || 0, 0, 1) : 0;
 }
 
 function getCellStateVisualAlpha(cell) {
@@ -2768,75 +2269,6 @@ function countLockedCellStates() {
   }
 
   return count;
-}
-
-function getHeldCellsAdjacentToEdge(edge) {
-  const cols = cellCountX();
-  const rows = cellCountY();
-  const start = edge.start;
-  const end = edge.end;
-
-  if (start.row === end.row) {
-    const row = start.row;
-    const minCol = Math.min(start.col, end.col);
-    const topCellRow = row - 1;
-    const bottomCellRow = row;
-
-    if (
-      minCol < 0
-      || minCol >= cols
-      || topCellRow < 0
-      || bottomCellRow >= rows
-    ) {
-      return null;
-    }
-
-    return [
-      { col: minCol, row: topCellRow },
-      { col: minCol, row: bottomCellRow },
-    ];
-  }
-
-  if (start.col === end.col) {
-    const col = start.col;
-    const minRow = Math.min(start.row, end.row);
-    const leftCellCol = col - 1;
-    const rightCellCol = col;
-
-    if (
-      minRow < 0
-      || minRow >= rows
-      || leftCellCol < 0
-      || rightCellCol >= cols
-    ) {
-      return null;
-    }
-
-    return [
-      { col: leftCellCol, row: minRow },
-      { col: rightCellCol, row: minRow },
-    ];
-  }
-
-  return null;
-}
-
-function getHeldEdgeFadeMultiplier(edge) {
-  if (!config.heldEdgeFadeEnabled || !config.revealEnabled) {
-    return 1;
-  }
-
-  const adjacentCells = getHeldCellsAdjacentToEdge(edge);
-  if (!adjacentCells) {
-    return 1;
-  }
-
-  const [a, b] = adjacentCells;
-  if (getCellImageOpacity(a) <= 0.001 || getCellImageOpacity(b) <= 0.001) {
-    return 1;
-  }
-
-  return clamp(config.heldEdgeFadeMinAlpha, 0, 1);
 }
 
 function pointToRectDistance(x, y, rect) {
@@ -2970,9 +2402,6 @@ function synchronizeLinkedLockedCellGroups() {
 }
 
 function updateCellStates(deltaSeconds) {
-  state.revealCells.clear();
-  state.heldCells.clear();
-
   if (!config.revealEnabled) {
     state.cellStates.clear();
     return;
@@ -3030,236 +2459,6 @@ function updateCellStates(deltaSeconds) {
 
     state.cellStates.set(key, entry);
   }
-}
-
-function updateHeldCells(deltaSeconds) {
-  if (!config.enclosureEnabled) {
-    state.heldCells.clear();
-    return;
-  }
-
-  const activeCells = new Map();
-  const minCells = Math.max(1, Math.round(config.enclosureMinCells));
-  const maxCells = Math.max(minCells, getEffectivePatchMaxCells());
-  const minContributors = Math.max(1, Math.round(config.enclosureMinContributors));
-
-  for (const region of buildEnclosedRegions()) {
-    if (region.areaCellCount < minCells || region.areaCellCount > maxCells) {
-      continue;
-    }
-
-    if (region.contributorCount < minContributors) {
-      continue;
-    }
-
-    const targetAlpha = getHeldCellTargetAlpha(region.contributorCount);
-    const holdMs = Math.max(
-      0,
-      config.heldCellHoldMs
-        + Math.max(0, region.contributorCount - 1) * config.heldCellContributorHoldBonusMs,
-    );
-
-    for (const cell of region.cells) {
-      const key = createCellKey(cell);
-      activeCells.set(key, {
-        cell: { ...cell },
-        targetAlpha,
-        holdMs,
-        contributorCount: region.contributorCount,
-        areaCellCount: region.areaCellCount,
-        boundaryEdgeCount: region.boundaryEdgeCount,
-      });
-    }
-  }
-
-  const deltaMs = deltaSeconds * 1000;
-  const seenKeys = new Set();
-
-  for (const [key, activeCell] of activeCells.entries()) {
-    seenKeys.add(key);
-    let entry = state.heldCells.get(key);
-
-    if (!entry) {
-      entry = {
-        cell: { ...activeCell.cell },
-        alpha: 0,
-        targetAlpha: 0,
-        holdMs: activeCell.holdMs,
-        lastActiveAt: state.now,
-        contributorCount: activeCell.contributorCount,
-        areaCellCount: activeCell.areaCellCount,
-        boundaryEdgeCount: activeCell.boundaryEdgeCount,
-        isActive: true,
-      };
-    }
-
-    const responseMs = activeCell.targetAlpha >= entry.alpha
-      ? Math.max(0, config.heldCellFadeInMs)
-      : Math.max(1, config.heldCellFadeOutMs);
-    const step = responseMs <= 0 ? 1 : clamp(deltaMs / responseMs, 0, 1);
-
-    entry.alpha = lerp(entry.alpha, activeCell.targetAlpha, step);
-    entry.targetAlpha = activeCell.targetAlpha;
-    entry.holdMs = activeCell.holdMs;
-    entry.lastActiveAt = state.now;
-    entry.contributorCount = activeCell.contributorCount;
-    entry.areaCellCount = activeCell.areaCellCount;
-    entry.boundaryEdgeCount = activeCell.boundaryEdgeCount;
-    entry.isActive = true;
-    state.heldCells.set(key, entry);
-  }
-
-  for (const [key, entry] of state.heldCells.entries()) {
-    if (seenKeys.has(key)) {
-      continue;
-    }
-
-    let targetAlpha = 0;
-    if (state.now - entry.lastActiveAt < entry.holdMs) {
-      targetAlpha = entry.alpha;
-    }
-
-    const responseMs = targetAlpha >= entry.alpha
-      ? Math.max(0, config.heldCellFadeInMs)
-      : Math.max(1, config.heldCellFadeOutMs);
-    const step = responseMs <= 0 ? 1 : clamp(deltaMs / responseMs, 0, 1);
-
-    entry.alpha = lerp(entry.alpha, targetAlpha, step);
-    entry.targetAlpha = targetAlpha;
-    entry.isActive = false;
-
-    if (entry.alpha <= 0.001 && entry.targetAlpha <= 0.001) {
-      state.heldCells.delete(key);
-    }
-  }
-}
-
-function getRevealOpacityForEffectiveEdgeCount(effectiveEdgeCount, fullyClosed) {
-  const count = clamp(effectiveEdgeCount, 0, 4);
-
-  const points = [
-    { count: 0, opacity: 0 },
-    { count: 1, opacity: config.revealOpacity1 },
-    { count: 2, opacity: config.revealOpacity2 },
-    { count: 3, opacity: config.revealOpacity3 },
-    { count: 4, opacity: config.revealOpacity4 },
-  ];
-
-  let opacity = 0;
-
-  for (let index = 0; index < points.length - 1; index += 1) {
-    const start = points[index];
-    const end = points[index + 1];
-
-    if (count >= start.count && count <= end.count) {
-      const segmentT = end.count === start.count
-        ? 1
-        : (count - start.count) / (end.count - start.count);
-      opacity = lerp(start.opacity, end.opacity, segmentT);
-      break;
-    }
-  }
-
-  if (count >= 4) {
-    opacity = config.revealOpacity4;
-  }
-
-  if (fullyClosed) {
-    opacity += config.revealClosedBonus;
-  }
-
-  return clamp(opacity, 0, 1);
-}
-
-function updateRevealCells(deltaSeconds) {
-  if (!config.revealEnabled) {
-    state.revealCells.clear();
-    return;
-  }
-
-  const edgeStrengths = buildActiveEdgeStrengthMap();
-  const deltaMs = deltaSeconds * 1000;
-  const activeThreshold = clamp(config.revealEdgeActiveThreshold, 0, 1);
-  const seenKeys = new Set();
-
-  for (let col = 0; col < cellCountX(); col += 1) {
-    for (let row = 0; row < cellCountY(); row += 1) {
-      const cell = { col, row };
-      const key = createCellKey(cell);
-      const borderKeys = getCellBorderSegmentKeys(cell);
-      const borderStrengths = {
-        top: edgeStrengths.get(borderKeys.top) || 0,
-        right: edgeStrengths.get(borderKeys.right) || 0,
-        bottom: edgeStrengths.get(borderKeys.bottom) || 0,
-        left: edgeStrengths.get(borderKeys.left) || 0,
-      };
-      const values = Object.values(borderStrengths);
-      const effectiveEdgeCount = values.reduce((sum, value) => sum + value, 0);
-      const activeEdgeCount = values.reduce(
-        (sum, value) => sum + (value >= activeThreshold ? 1 : 0),
-        0,
-      );
-      const fullyClosed = activeEdgeCount === 4;
-      let targetAlpha = getRevealOpacityForEffectiveEdgeCount(effectiveEdgeCount, fullyClosed);
-      let entry = state.revealCells.get(key);
-
-      if (targetAlpha > 0) {
-        seenKeys.add(key);
-      }
-
-      if (!entry && targetAlpha <= 0) {
-        continue;
-      }
-
-      if (!entry) {
-        entry = {
-          cell: { ...cell },
-          alpha: 0,
-          targetAlpha: 0,
-          effectiveEdgeCount: 0,
-          activeEdgeCount: 0,
-          fullyClosed: false,
-          borderStrengths,
-          activatedAt: state.now,
-          lastActiveAt: targetAlpha > 0 ? state.now : 0,
-        };
-      }
-
-      if (targetAlpha > 0) {
-        entry.lastActiveAt = state.now;
-      } else if (state.now - entry.lastActiveAt < config.revealHoldMs) {
-        targetAlpha = entry.alpha;
-      }
-
-      const responseMs = targetAlpha >= entry.alpha
-        ? Math.max(0, config.revealFadeInMs)
-        : Math.max(1, config.revealFadeOutMs);
-      const step = responseMs <= 0 ? 1 : clamp(deltaMs / responseMs, 0, 1);
-      const nextAlpha = lerp(entry.alpha, targetAlpha, step);
-
-      entry.alpha = nextAlpha;
-      entry.targetAlpha = targetAlpha;
-      entry.effectiveEdgeCount = effectiveEdgeCount;
-      entry.activeEdgeCount = activeEdgeCount;
-      entry.fullyClosed = fullyClosed;
-      entry.borderStrengths = borderStrengths;
-      state.revealCells.set(key, entry);
-    }
-  }
-
-  for (const [key, entry] of state.revealCells.entries()) {
-    if (seenKeys.has(key)) {
-      continue;
-    }
-
-    if (entry.alpha <= 0.001 && entry.targetAlpha <= 0.001) {
-      state.revealCells.delete(key);
-    }
-  }
-}
-
-function getRevealCellAlpha(entry) {
-  return clamp(entry.alpha || 0, 0, 1);
 }
 
 function loadRevealImage() {
@@ -3545,49 +2744,6 @@ function drawRevealCells() {
   }
 }
 
-function drawHeldCells() {
-  // Cell reveal now renders from a single cell-energy layer in drawRevealCells().
-}
-
-function drawRevealCellDebug() {
-  if (!config.showRevealCells) {
-    return;
-  }
-
-  ctx.save();
-
-  for (const entry of state.revealCells.values()) {
-    const rect = getCellRect(entry.cell);
-    const screenRect = worldRectToScreenRect(rect);
-    const alpha = getRevealCellAlpha(entry);
-
-    if (alpha <= 0) {
-      continue;
-    }
-
-    ctx.strokeStyle = `rgba(255, 255, 255, ${0.16 + alpha * 0.4})`;
-    ctx.lineWidth = 1;
-    ctx.strokeRect(
-      screenRect.x + 0.5,
-      screenRect.y + 0.5,
-      Math.max(0, screenRect.width - 1),
-      Math.max(0, screenRect.height - 1),
-    );
-
-    ctx.fillStyle = `rgba(255, 255, 255, ${0.18 + alpha * 0.42})`;
-    ctx.font = '11px monospace';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillText(
-      String(entry.activeEdgeCount),
-      screenRect.x + screenRect.width * 0.5,
-      screenRect.y + screenRect.height * 0.5,
-    );
-  }
-
-  ctx.restore();
-}
-
 function drawHeldCellDebug() {
   if (!config.showHeldCells) {
     return;
@@ -3661,7 +2817,7 @@ function drawActiveEdges() {
   }
 
   for (const edge of state.activeEdges.values()) {
-    const alphaMultiplier = getActiveEdgeAlphaMultiplier(edge) * getHeldEdgeFadeMultiplier(edge);
+    const alphaMultiplier = getActiveEdgeAlphaMultiplier(edge);
 
     if (alphaMultiplier <= 0) {
       continue;
@@ -3972,7 +3128,6 @@ function render() {
   }
 
   drawRevealCells();
-  drawHeldCells();
 
   if (config.gridOverReveal) {
     drawBaseGrid();
@@ -3980,7 +3135,6 @@ function render() {
 
   drawActiveEdges();
   drawActiveSegments();
-  drawRevealCellDebug();
   drawHeldCellDebug();
   drawDebugIntersections();
   drawDebugTarget();
@@ -4147,7 +3301,7 @@ function setupGui() {
   nodeFolder.add(config, 'nodeSpawnBounce', 0, 3, 0.05).name('Spawn Bounce');
   nodeFolder.close();
 
-  const activeEdgeFolder = gui.addFolder('Active Edges');
+  const activeEdgeFolder = gui.addFolder('Trails');
   activeEdgeFolder.add(config, 'activeEdgeEnabled').name('Enabled');
   activeEdgeFolder.addColor(config, 'activeEdgeColor').name('Line');
   activeEdgeFolder.add(config, 'activeEdgeOpacity', 0, 1, 0.01).name('Line Alpha');
@@ -4316,10 +3470,6 @@ revealFolder.add(config, 'revealImageOffsetX', -4000, 4000, 1)
     GUI_HELP_TEXT.showIntersections,
   );
   attachGuiHelp(
-    debugFolder.add(config, 'showRevealCells').name('Reveal Cells'),
-    GUI_HELP_TEXT.showRevealCells,
-  );
-  attachGuiHelp(
     debugFolder.add(config, 'showHeldCells').name('Cell Opacity'),
     GUI_HELP_TEXT.showHeldCells,
   );
@@ -4357,13 +3507,12 @@ revealFolder.add(config, 'revealImageOffsetX', -4000, 4000, 1)
   networkFolder.add(networkInfo, 'status').name('Status').listen();
   networkFolder.add(networkInfo, 'roomId').name('Room').listen();
   networkFolder.add(networkInfo, 'players').name('Players').listen();
-  networkFolder.add(networkInfo, 'shareUrl').name('Share WS').listen();
+  networkFolder.add(networkInfo, 'shareUrl').name('Share URL').listen();
   networkFolder.close();
 
   const utilitiesFolder = gui.addFolder('Utilities');
-  utilitiesFolder.add(actions, 'clearActiveEdges').name('Clear Active Edges');
-  utilitiesFolder.add(actions, 'clearRevealCells').name('Clear Cell States');
-  utilitiesFolder.add(actions, 'clearHeldCells').name('Clear Legacy Cells');
+  utilitiesFolder.add(actions, 'clearActiveEdges').name('Clear Trails');
+  utilitiesFolder.add(actions, 'clearCellStates').name('Clear Cell States');
   utilitiesFolder.add(actions, 'randomizeSpawn').name('Random Spawn');
   utilitiesFolder.add(actions, 'reconnectNetwork').name('Reconnect Network');
   utilitiesFolder.add(actions, 'disconnectNetwork').name('Disconnect Network');

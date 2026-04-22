@@ -2,9 +2,9 @@ const http = require('http');
 const { WebSocketServer } = require('ws');
 
 const PORT = Number(process.env.PORT) || 8080;
+const FRONTEND_SHARE_PORT = 5173;
 const MAX_PLAYERS_PER_ROOM = 5;
 const MAX_MESSAGE_BYTES = 16 * 1024;
-const EDGE_SNAPSHOT_TTL_MS = 12000;
 const PLAYER_UPDATE_MIN_INTERVAL_MS = 25;
 const ROOM_PRUNE_INTERVAL_MS = 250;
 const os = require('os');
@@ -58,7 +58,6 @@ function createRoom() {
     world: createRoomWorld(),
     clients: new Set(),
     players: new Map(),
-    activeEdges: new Map(),
   };
 
   rooms.set(room.id, room);
@@ -96,13 +95,13 @@ function getLanIpAddress() {
   return null;
 }
 
-function getShareableWsUrl(port) {
+function getShareablePageUrl(port) {
   const lanIp = getLanIpAddress();
   if (!lanIp) {
-    return `ws://localhost:${port}`;
+    return `http://localhost:${port}`;
   }
 
-  return `ws://${lanIp}:${port}`;
+  return `http://${lanIp}:${port}`;
 }
 
 function getRoomPlayerCount(room) {
@@ -215,50 +214,7 @@ function sanitizePlayerState(payload, world) {
   };
 }
 
-function touchRoomEdge(room, playerId, start, end, now) {
-  const key = createSegmentKey(start, end);
-  let edge = room.activeEdges.get(key);
-
-  if (!edge) {
-    edge = {
-      key,
-      start: { ...start },
-      end: { ...end },
-      sources: new Map(),
-    };
-  }
-
-  edge.sources.set(playerId, {
-    lastTouchedAt: now,
-  });
-
-  room.activeEdges.set(key, edge);
-}
-
-function createSegmentKey(a, b) {
-  const left = `${a.col},${a.row}`;
-  const right = `${b.col},${b.row}`;
-  return left < right ? `${left}|${right}` : `${right}|${left}`;
-}
-
-function pruneRoomEdges(room, now = Date.now()) {
-  for (const [key, edge] of room.activeEdges.entries()) {
-    for (const [playerId, source] of edge.sources.entries()) {
-      if (now - source.lastTouchedAt > EDGE_SNAPSHOT_TTL_MS) {
-        edge.sources.delete(playerId);
-      }
-    }
-
-    if (edge.sources.size === 0) {
-      room.activeEdges.delete(key);
-    }
-  }
-}
-
 function serializeRoomState(room, ws) {
-  const now = Date.now();
-  pruneRoomEdges(room, now);
-
   return {
     type: 'room_state',
     roomId: room.id,
@@ -267,14 +223,6 @@ function serializeRoomState(room, ws) {
     players: Array.from(room.players.entries()).map(([playerId, player]) => ({
       id: playerId,
       ...player,
-    })),
-    activeEdges: Array.from(room.activeEdges.values()).map((edge) => ({
-      start: edge.start,
-      end: edge.end,
-      sources: Array.from(edge.sources.entries()).map(([playerId, source]) => ({
-        playerId,
-        ageMs: Math.max(0, now - source.lastTouchedAt),
-      })),
     })),
   };
 }
@@ -338,7 +286,7 @@ wss.on('connection', (ws) => {
     roomId: ws.room.id,
     world: ws.room.world,
     maxPlayers: MAX_PLAYERS_PER_ROOM,
-    shareUrl: getShareableWsUrl(PORT),
+    shareUrl: getShareablePageUrl(FRONTEND_SHARE_PORT),
   });
 
   send(ws, serializeRoomState(ws.room, ws));
@@ -360,7 +308,6 @@ wss.on('connection', (ws) => {
       return;
     }
 
-    const now = Date.now();
     const room = ws.room;
     if (!room) {
       return;
@@ -384,24 +331,6 @@ wss.on('connection', (ws) => {
         break;
       }
 
-      case 'edge_touch': {
-        const start = message.start;
-        const end = message.end;
-        if (!isValidAdjacentWorldEdge(room.world, start, end)) {
-          return;
-        }
-
-        touchRoomEdge(room, ws.playerId, start, end, now);
-
-        broadcast(room, {
-          type: 'edge_touch',
-          playerId: ws.playerId,
-          start,
-          end,
-        }, ws);
-        break;
-      }
-
       default:
         break;
     }
@@ -417,9 +346,7 @@ wss.on('connection', (ws) => {
 });
 
 setInterval(() => {
-  const now = Date.now();
   for (const room of rooms.values()) {
-    pruneRoomEdges(room, now);
     if (room.clients.size === 0) {
       rooms.delete(room.id);
     }

@@ -20,7 +20,7 @@ The current reveal mechanic is now primarily **node-driven cell energy**, not ed
 - cells only lock/hold after reaching `100%`
 - co-op can buff charge, ring spread, decay, and hold timing
 
-Active edges still exist visually as feedback trails, but they are no longer the primary reveal mechanic.
+Trails still exist visually as feedback, but they are now local/client-side visuals rather than a separate shared reveal mechanic.
 
 ## Current features
 
@@ -121,7 +121,7 @@ If that file is missing or fails to load, the reveal source will fall back.
 The current GUI includes controls for:
 - background and grid
 - movement and node visuals
-- active-edge visuals
+- trail visuals
 - reveal image placement and vignette
 - cell energy behavior
 - co-op buff behavior
@@ -174,7 +174,7 @@ Known mobile browser note:
   - decay
   - hold
   - pulse / glow feedback
-- decide whether any enclosure logic remains necessary after more playtesting
+- keep validating that the cell-energy model is strong enough without bringing enclosure logic back
 
 ## Later direction
 

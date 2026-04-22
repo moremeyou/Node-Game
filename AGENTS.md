@@ -126,7 +126,7 @@ These are not complete yet:
 - room metadata is currently hardcoded in `server.cjs`, not loaded from a private config file
 - reveal/cell progress is still client-derived
 - cooperative revealed cell state is still local/client-owned
-- the older enclosed-shape logic is no longer the primary reveal model and may be removed later if testing continues to favor cell energy
+- active edge trails are currently client-side visual feedback, not shared reveal logic
 
 ### Intended direction from here
 
