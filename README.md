@@ -39,11 +39,16 @@ Trails still exist visually as feedback, but they are now local/client-side visu
 - max 5 players per room
 - lil-gui controls with hover/tap help descriptions
 - config copy/paste for fast tuning snapshots
-- page title includes version plus Vite build timestamp
+- bottom-right build badge includes version plus build timestamp
 
 ## Project structure
 
-- `src/main.js` - frontend app logic, rendering, GUI, local reveal model
+- `src/main.js` - frontend app bootstrap, rendering loop, world/view state, and gameplay coordination
+- `src/gui.js` - lil-gui setup, help text, help overlay, and GUI layout
+- `src/networking.js` - websocket client lifecycle and message plumbing
+- `src/cellEnergy.js` - canonical local cell-energy reveal behavior
+- `src/trailEffects.js` - local visual trail feedback helpers
+- `src/configSnapshots.js` - config snapshot import/export helpers
 - `server.cjs` - multiplayer WebSocket server
 - `public/teaser-hidden.jpg` - hidden reveal image
 - `vite.config.js` - lightweight Vite config including build timestamp define
@@ -120,23 +125,23 @@ If that file is missing or fails to load, the reveal source will fall back.
 
 The current GUI includes controls for:
 - background and grid
-- movement and node visuals
+- node behavior and node visuals
 - trail visuals
 - reveal image placement and vignette
 - cell energy behavior
 - co-op buff behavior
-- NPC count
+- local NPC helper count
 - debug overlays
 - network status
 - config copy/paste
 
 Current testing defaults keep these sections open:
-- `Buffs`
-- `NPCs`
+- `Co-op Buffs`
 - `Cell Energy`
 - `Debug`
+- `Dev Tools`
 
-The GUI also includes a floating help tooltip for all current non-Network / non-Utilities properties.
+The GUI also includes a floating help tooltip for the current tunable properties.
 
 Recommended collaborative image defaults:
 - `Image Fit` = `native`
@@ -154,7 +159,7 @@ Recommended collaborative image defaults:
   - the reveal image is world-anchored and vignetted at the edges
 - The reveal mechanic has moved away from edge-enclosure hold logic and into a more direct node/cell energy model.
 - Local NPCs can now stand in for co-op partners during tuning and count toward local co-op buffs.
-- The title now shows `nodegame v<version> (<build timestamp>)` so it is easier to confirm the current frontend build.
+- The current frontend build is shown in a small bottom-right badge as `nodegame v<version> (<build timestamp>)`.
 
 Known mobile browser note:
 - Safari mobile landscape can render the full available width.

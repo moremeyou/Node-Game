@@ -51,6 +51,7 @@ The current prototype already has working versions of:
 - WebSocket networking
 - lil-gui controls for many visual and behavioral parameters
 - lil-gui property help descriptions for current tuning sections
+- first-pass frontend module extraction for cell energy, trails, networking, config snapshots, and GUI
 
 Treat existing project files as the source of truth.
 
@@ -143,6 +144,20 @@ The project should continue toward a canonical shared-room model where:
 - strict server validation and anti-spam hardening are added after core mechanics settle
 
 Do not make short-term changes that deepen dependency on per-client viewport-defined gameplay space unless explicitly requested.
+
+### Current cleanup direction
+
+The frontend has started moving away from a monolithic `main.js`.
+
+Current extracted modules include:
+
+- `src/cellEnergy.js`
+- `src/trailEffects.js`
+- `src/networking.js`
+- `src/configSnapshots.js`
+- `src/gui.js`
+
+Prefer continuing that cleanup direction when it improves clarity without changing authority boundaries or gameplay ownership.
 
 ### Known mobile browser caveat
 

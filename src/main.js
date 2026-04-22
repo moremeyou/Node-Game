@@ -1,108 +1,47 @@
-import GUI from 'lil-gui';
+import { countLockedCellStates as countLockedCellEntries, updateCellEnergyState } from './cellEnergy.js';
+import { buildNamedSnapshot, parseNamedSnapshot } from './configSnapshots.js';
+import { createGuiManager } from './gui.js';
+import { createNetworkController } from './networking.js';
 import './style.css';
+import { clearExpiredTrailEdges, getTrailEdgeAlphaMultiplier, touchTrailEdge } from './trailEffects.js';
 import packageInfo from '../package.json';
 
 const canvas = document.querySelector('#app');
 const ctx = canvas.getContext('2d');
 
-const buildTimestamp = typeof __BUILD_TIMESTAMP__ !== 'undefined'
+function formatAmsterdamBuildTimestamp(date = new Date()) {
+  const formatter = new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'Europe/Amsterdam',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    day: '2-digit',
+    month: '2-digit',
+    hour12: false,
+  });
+
+  const parts = Object.fromEntries(
+    formatter
+      .formatToParts(date)
+      .filter((part) => part.type !== 'literal')
+      .map((part) => [part.type, part.value]),
+  );
+
+  return `${parts.hour}:${parts.minute}:${parts.second}-${parts.day}/${parts.month}`;
+}
+
+const buildTimestamp = typeof __BUILD_TIMESTAMP__ !== 'undefined' && __BUILD_TIMESTAMP__
   ? __BUILD_TIMESTAMP__
-  : 'dev';
+  : formatAmsterdamBuildTimestamp();
 
-document.title = `nodegame v${packageInfo.version} (${buildTimestamp})`;
+const buildInfoLabel = `nodegame v${packageInfo.version} (${buildTimestamp})`;
 
-let guiInstance = null;
-let guiHelpOverlay = null;
-let guiHelpActiveTarget = null;
-let guiHelpPinned = false;
-const guiControllers = {
-  revealVignetteColor: null,
-};
-const GUI_HELP_TEXT = {
-  backgroundGradientEnabled: 'Turns the background gradient on or off behind the scene.',
-  backgroundGradientTopColor: 'Top color of the scene background gradient.',
-  backgroundGradientBottomColor: 'Bottom color of the scene background gradient.',
-  backgroundGradientTopAlpha: 'Opacity of the gradient at the top of the screen.',
-  backgroundGradientBottomAlpha: 'Opacity of the gradient at the bottom of the screen.',
-  backgroundColor: 'Fallback flat background color used when the gradient is disabled or too subtle to notice.',
-  gridSize: 'World-space size of one grid cell. This affects room geometry, movement spacing, and image cell size.',
-  minCellScreenPx: 'Minimum on-screen pixel size a world cell should try to maintain when fitting the room to the viewport.',
-  gridColor: 'Color of the base grid lines drawn across the world.',
-  gridOpacity: 'Opacity of the base grid lines.',
-  gridLineWidth: 'Thickness of the base grid lines.',
-  gridOverReveal: 'Draws the base grid over the image reveal instead of underneath it.',
-  spawnDelayMs: 'Delay before newly visible nodes begin showing up.',
-  spawnFadeMs: 'How long node spawn-in takes visually.',
-  followPointerDelayMs: 'How long after spawning the local node waits before it starts following the pointer.',
-  moveSpeed: 'Movement speed of nodes along the grid in world units per second.',
-  routePreference: 'How Manhattan routes choose their first axis when moving toward a target.',
-  turnPauseMs: 'Small pause inserted between grid-edge turns.',
-  segmentEasing: 'How much motion eases along each segment instead of moving perfectly linearly.',
-  nodeColor: 'Fill color of each visible node.',
-  nodeBorderColor: 'Outline color of each node.',
-  nodeBorderOpacity: 'Opacity of the node outline.',
-  nodeBorderWidth: 'Thickness of the node outline.',
-  nodeGlowColor: 'Glow color emitted by each node.',
-  nodeGlowOpacity: 'Opacity of the node glow. The current slider value is treated as the 3-player baseline and scales with co-op count.',
-  nodeGlowBlur: 'Blur radius of the node glow. The current slider value is treated as the 3-player baseline and scales with co-op count.',
-  nodeWidth: 'Width of each node in screen-scaled pixels.',
-  nodeHeight: 'Height of each node in screen-scaled pixels.',
-  nodeRadius: 'Corner radius of the node shape.',
-  nodePulseAmplitude: 'How much the idle node pulse changes node size over time.',
-  pulseSpeed: 'Speed of the idle node pulse. The current slider value is treated as the 2-player baseline and scales with co-op count.',
-  nodeSpawnStartScale: 'Initial scale multiplier when a node spawns in.',
-  nodeSpawnBounce: 'How springy the spawn scale animation feels.',
-  activeEdgeEnabled: 'Shows or hides the active-edge trail rendering. Trails are visual only now and no longer drive cell charge.',
-  activeEdgeColor: 'Core line color of the active-edge trail rendering.',
-  activeEdgeOpacity: 'Opacity of the active-edge line.',
-  activeEdgeGlowColor: 'Glow color for active-edge trails.',
-  activeEdgeGlowOpacity: 'Opacity of the active-edge glow.',
-  activeEdgeLineWidth: 'Thickness of the active-edge line.',
-  activeEdgeGlowWidth: 'Additional spread used to widen the active-edge glow.',
-  activeEdgeLineCap: 'Line cap style used for active-edge rendering.',
-  activeEdgeGlowBlur: 'Blur radius of the active-edge glow.',
-  activeEdgeHoldMs: 'How long a touched edge stays fully bright before its visual fade starts.',
-  activeEdgeFadeMs: 'How long active-edge trails take to visually fade out after hold time ends.',
-  npcCount: 'Local-only helper nodes for testing co-op behavior. NPCs count toward local co-op buffs.',
-  revealEnabled: 'Turns image reveal rendering on or off entirely.',
-  revealImageSrc: 'Image path used as the hidden reveal source.',
-  revealImageFitMode: 'How the reveal image is placed inside the room world before scale and offsets are applied.',
-  revealImageScale: 'Extra scale multiplier applied to the reveal image inside room space.',
-  revealImageOffsetX: 'Horizontal world-space offset for the reveal image.',
-  revealImageOffsetY: 'Vertical world-space offset for the reveal image.',
-  revealVignetteEnabled: 'Turns the edge vignette around the reveal image on or off.',
-  revealVignetteMode: 'Whether the vignette fades the image by alpha or blends it toward a color.',
-  revealVignetteColor: 'Color used when the vignette is in color mode.',
-  revealVignetteInnerOpacity: 'Vignette strength toward the center of the image bounds.',
-  revealVignetteEdgeOpacity: 'Vignette strength at the outer image edges.',
-  revealVignetteSize: 'How far the vignette extends inward from the image edges.',
-  revealVignetteCurve: 'Response curve for how quickly the vignette ramps from edge to center.',
-  revealImageOpacity: 'Overall opacity of the revealed image cells.',
-  revealTintColor: 'Tint color laid over revealed image cells.',
-  revealTintOpacity: 'Opacity of the reveal tint overlay.',
-  cellEnergyEffect: 'Global multiplier for the base Cell Energy settings. 1 keeps them unchanged, 0.5 weakens them, 2 strengthens them.',
-  cellChargePerSecond: 'Base image opacity added per second to the strongest cells nearest each node.',
-  cellChargeRingFalloff: 'How much weaker each outer ring is than the previous ring. Higher keeps energy spreading farther.',
-  cellRingFloorEnabled: 'When on, outer rings never drop below the configured minimum ring strength.',
-  cellRingFloor: 'Minimum multiplier for outer-ring charge once ring falloff has reduced it.',
-  cellChargeMaxRing: 'How many side-connected rings around a node receive any charge at all.',
-  cellDecayMs: 'How long an uncharged, unlocked cell takes to drain from full to empty.',
-  cellLockHoldMs: 'How long a cell stays pinned at 100 after it fully charges.',
-  cellLinkedLockFade: 'When on, side-connected locked cells share one release time and start fading together.',
-  coopBuffEffect: 'Global multiplier for all per-player co-op bonuses. 1 keeps them unchanged, 0 disables them.',
-  cellChargeBuffPerPlayer: 'Extra per-player charge multiplier applied on top of the base charge rate.',
-  cellRingFalloffBonusPerPlayer: 'Extra per-player increase to outer-ring strength, making charge spread feel wider.',
-  cellRingFloorBonusPerPlayer: 'Extra per-player increase to the minimum outer-ring strength when ring floor is enabled.',
-  cellRingCountBonusPerPlayer: 'Extra per-player ring reach. This is discrete, so smaller scaled bonuses may not add a new ring yet.',
-  cellDecayBonusMsPerPlayer: 'Extra per-player time before cells fully drain, making patches linger longer.',
-  cellLockHoldBonusMsPerPlayer: 'Extra per-player hold time after a cell reaches 100.',
-  showTarget: 'Shows the current target intersection for the local player.',
-  showIntersections: 'Shows the world-space grid intersections used for movement and node snapping.',
-  showHeldCells: 'Shows each room cell as a 0-100 image-opacity value from the current cell-energy system.',
-  showTrailBuffOverlay: 'Shows live co-op and cell-energy buff values in the lower-left overlay.',
-  showPlayerIds: 'Draws each visible player id above its node.',
-  showViewportDebug: 'Shows canvas and viewport metrics for layout debugging.',
-};
+document.title = 'nodegame';
+
+const buildInfoBadge = document.createElement('div');
+buildInfoBadge.className = 'build-info-badge';
+buildInfoBadge.textContent = buildInfoLabel;
+document.body.appendChild(buildInfoBadge);
 
 function parseCssPixelValue(value) {
   const number = Number.parseFloat(value);
@@ -140,214 +79,11 @@ function getViewportSize() {
   };
 }
 
-function applyGuiLayout(gui) {
-  if (!gui) {
-    return;
-  }
-
-  const margin = 12;
-  const viewportSize = getViewportSize();
-  const width = Math.max(240, Math.min(320, viewportSize.width - margin * 2));
-  const el = gui.domElement;
-
-  el.style.setProperty('--width', `${width}px`);
-  el.style.width = `${width}px`;
-  el.style.boxSizing = 'border-box';
-  el.style.position = 'fixed';
-  el.style.top = `${margin}px`;
-  el.style.right = `${margin}px`;
-  el.style.left = 'auto';
-  el.style.maxWidth = `calc(100vw - ${margin * 2}px)`;
-  el.style.maxHeight = `calc(100vh - ${margin * 2}px)`;
-  el.style.overflowX = 'hidden';
-  el.style.overflowY = 'auto';
-  el.style.zIndex = '30';
-  positionGuiHelpOverlay();
-}
-
-function ensureGuiHelpOverlay(gui) {
-  if (!gui) {
-    return null;
-  }
-
-  if (guiHelpOverlay && guiHelpOverlay.isConnected) {
-    return guiHelpOverlay;
-  }
-
-  guiHelpOverlay = document.createElement('div');
-  guiHelpOverlay.style.position = 'fixed';
-  guiHelpOverlay.style.zIndex = '40';
-  guiHelpOverlay.style.display = 'none';
-  guiHelpOverlay.style.maxWidth = '280px';
-  guiHelpOverlay.style.padding = '10px 12px';
-  guiHelpOverlay.style.font = '11px/1.35 monospace';
-  guiHelpOverlay.style.whiteSpace = 'normal';
-  guiHelpOverlay.style.background = 'rgba(0, 0, 0, 0.82)';
-  guiHelpOverlay.style.border = '1px solid rgba(255, 255, 255, 0.16)';
-  guiHelpOverlay.style.borderRadius = '6px';
-  guiHelpOverlay.style.color = 'rgba(255, 255, 255, 0.88)';
-  guiHelpOverlay.style.pointerEvents = 'none';
-  guiHelpOverlay.style.boxSizing = 'border-box';
-  guiHelpOverlay.style.boxShadow = '0 10px 28px rgba(0, 0, 0, 0.26)';
-  document.body.appendChild(guiHelpOverlay);
-  return guiHelpOverlay;
-}
-
-function positionGuiHelpOverlay() {
-  if (
-    !guiHelpOverlay
-    || !guiHelpActiveTarget
-    || guiHelpOverlay.style.display === 'none'
-  ) {
-    return;
-  }
-
-  const targetRect = guiHelpActiveTarget.getBoundingClientRect();
-  const guiRect = guiInstance && guiInstance.domElement
-    ? guiInstance.domElement.getBoundingClientRect()
-    : targetRect;
-  const viewportWidth = window.innerWidth || document.documentElement.clientWidth || 0;
-  const viewportHeight = window.innerHeight || document.documentElement.clientHeight || 0;
-  const margin = 12;
-  const preferredWidth = 280;
-  const maxAvailableLeft = Math.max(200, Math.min(preferredWidth, guiRect.left - margin * 2));
-  const fallbackWidth = Math.max(220, Math.min(preferredWidth, viewportWidth - margin * 2));
-  let width = maxAvailableLeft;
-  let left = guiRect.left - width - margin;
-
-  if (left < margin) {
-    width = fallbackWidth;
-    left = Math.min(viewportWidth - width - margin, guiRect.right + margin);
-  }
-
-  guiHelpOverlay.style.width = `${Math.max(200, width)}px`;
-  guiHelpOverlay.style.left = `${Math.max(margin, left)}px`;
-
-  const overlayHeight = guiHelpOverlay.offsetHeight || 0;
-  const targetMidY = targetRect.top + targetRect.height * 0.5;
-  const top = clamp(
-    targetMidY - overlayHeight * 0.5,
-    margin,
-    Math.max(margin, viewportHeight - overlayHeight - margin),
-  );
-  guiHelpOverlay.style.top = `${top}px`;
-}
-
-function showGuiHelp(text, target, { pinned = false } = {}) {
-  if (!text || !target) {
-    return;
-  }
-
-  ensureGuiHelpOverlay(guiInstance);
-  if (!guiHelpOverlay) {
-    return;
-  }
-
-  guiHelpOverlay.textContent = text;
-  guiHelpActiveTarget = target;
-  guiHelpPinned = pinned;
-  guiHelpOverlay.style.display = 'block';
-  positionGuiHelpOverlay();
-}
-
-function hideGuiHelp({ force = false } = {}) {
-  if (!guiHelpOverlay) {
-    return;
-  }
-
-  if (guiHelpPinned && !force) {
-    return;
-  }
-
-  guiHelpOverlay.style.display = 'none';
-  guiHelpActiveTarget = null;
-  guiHelpPinned = false;
-}
-
-function handleGlobalGuiHelpPointerDown(event) {
-  if (!guiHelpPinned) {
-    return;
-  }
-
-  if (guiInstance && guiInstance.domElement && guiInstance.domElement.contains(event.target)) {
-    return;
-  }
-
-  hideGuiHelp({ force: true });
-}
-
-function attachGuiHelp(controller, text) {
-  if (!controller || !controller.domElement || !text) {
-    return controller;
-  }
-
-  const target = controller.domElement;
-  if (!target) {
-    return controller;
-  }
-
-  if (target.dataset.guiHelpBound === '1') {
-    return controller;
-  }
-
-  const label = controller.domElement.querySelector('.name');
-  if (label) {
-    label.title = text;
-  }
-
-  const showHelp = () => showGuiHelp(text, target);
-  const hideHelp = () => hideGuiHelp();
-  const pinHelp = () => showGuiHelp(text, target, { pinned: true });
-  target.addEventListener('pointerenter', showHelp);
-  target.addEventListener('pointerleave', hideHelp);
-  target.addEventListener('focusin', showHelp);
-  target.addEventListener('focusout', hideHelp);
-  target.addEventListener('pointerdown', pinHelp);
-  target.dataset.guiHelpBound = '1';
-  return controller;
-}
-
-function bindGuiHelpFromMap(gui) {
-  if (!gui || typeof gui.controllersRecursive !== 'function') {
-    return;
-  }
-
-  for (const controller of gui.controllersRecursive()) {
-    const key = controller && typeof controller.property === 'string'
-      ? controller.property
-      : null;
-    const text = key ? GUI_HELP_TEXT[key] : null;
-    if (!text) {
-      continue;
-    }
-
-    attachGuiHelp(controller, text);
-  }
-}
-
-document.addEventListener('pointerdown', handleGlobalGuiHelpPointerDown, true);
-window.addEventListener('resize', positionGuiHelpOverlay);
-window.addEventListener('scroll', positionGuiHelpOverlay, true);
-
-function setControllerEnabled(controller, enabled) {
-  if (!controller || !controller.domElement) {
-    return;
-  }
-
-  controller.domElement.style.opacity = enabled ? '1' : '0.4';
-  controller.domElement.style.pointerEvents = enabled ? 'auto' : 'none';
-}
-
-function updateRevealVignetteGuiState() {
-  const usesColor = config.revealVignetteMode === 'color';
-  setControllerEnabled(guiControllers.revealVignetteColor, usesColor);
-}
 
 const revealSourceCanvas = document.createElement('canvas');
 const revealSourceCtx = revealSourceCanvas.getContext('2d');
 
 const LOCAL_PLAYER_ID = 'local';
-const DEBUG_PLAYER_PREFIX = 'debug-';
 const NPC_PLAYER_PREFIX = 'npc-';
 const NPC_PATCH_LOOP_COUNT = 2;
 const NPC_PATCH_MIN_SEPARATION = 4;
@@ -364,7 +100,7 @@ function getDefaultNetworkUrl() {
 }
 
 const config = {
-  backgroundColor: "#000000",
+  flatBackgroundColor: "#000000",
   backgroundGradientEnabled: true,
   backgroundGradientTopColor: "#000000",
   backgroundGradientBottomColor: "#0b1728",
@@ -396,18 +132,18 @@ const config = {
   pulseSpeed: 6.4,
   nodeSpawnStartScale: 7.4,
   nodeSpawnBounce: 1.5,
-  activeEdgeEnabled: false,
-  activeEdgeColor: "#b8d5ff",
-  activeEdgeOpacity: 0.95,
-  activeEdgeGlowColor: "#6ea9ff",
-  activeEdgeGlowOpacity: 0.93,
-  activeEdgeLineWidth: 1,
-  activeEdgeGlowWidth: 26,
-  activeEdgeLineCap: "square",
-  activeEdgeGlowBlur: 32,
-  activeEdgeHoldMs: 50,
-  activeEdgeFadeMs: 670,
-  npcCount: 1,
+  trailEnabled: false,
+  trailColor: "#b8d5ff",
+  trailOpacity: 0.95,
+  trailGlowColor: "#6ea9ff",
+  trailGlowOpacity: 0.93,
+  trailLineWidth: 1,
+  trailGlowWidth: 26,
+  trailLineCap: "square",
+  trailGlowBlur: 32,
+  trailHoldMs: 50,
+  trailFadeMs: 670,
+  npcHelperCount: 1,
   revealEnabled: true,
   revealImageSrc: "/teaser-hidden.jpg",
   revealImageFitMode: 'native',
@@ -442,12 +178,11 @@ const config = {
   cellLinkedLockFade: true,
   gridOverReveal: true,
   showTarget: false,
-  showIntersections: true,
+  showGridIntersections: true,
   showHeldCells: false,
-  showTrailBuffOverlay: false,
+  showEnergyOverlay: false,
   showPlayerIds: false,
   showViewportDebug: false,
-  networkEnabled: true,
   networkUrl: getDefaultNetworkUrl(),
   networkSendIntervalMs: 50,
   networkReconnectDelayMs: 1500,
@@ -572,8 +307,8 @@ const state = {
   },
   localPlayerId: LOCAL_PLAYER_ID,
   players: new Map(),
-  activeEdges: new Map(),
-  cellStates: new Map(),
+  activeEdges: new Map(), // Local visual-only trail feedback.
+  cellStates: new Map(), // Local client-owned cell-energy reveal state.
   room: {
     world: createDefaultRoomWorld(),
   },
@@ -587,21 +322,17 @@ const state = {
     worldHeight: 1,
   },
   alternatingAxisStartsHorizontal: true,
-  nextDebugPlayerIndex: 1,
   npc: {
     patchCell: null,
     lastPatchCell: null,
     patchVersion: 0,
   },
   network: {
-    socket: null,
     status: 'disconnected',
     roomId: null,
     serverPlayerId: null,
-    shouldReconnect: true,
-    reconnectTimer: null,
-    lastPlayerStateSentAt: 0,
     playerCount: 1,
+    shareUrl: '-',
   },
 };
 
@@ -622,16 +353,7 @@ const networkInfo = {
 };
 
 function buildConfigSnapshot() {
-  const lines = ['const config = {'];
-
-  for (const [key, value] of Object.entries(config)) {
-    const formattedValue =
-      typeof value === 'string' ? JSON.stringify(value) : String(value);
-    lines.push(`  ${key}: ${formattedValue},`);
-  }
-
-  lines.push('};');
-  return lines.join('\n');
+  return buildNamedSnapshot('config', config);
 }
 
 async function copyTextToClipboard(text) {
@@ -686,34 +408,7 @@ async function readTextFromClipboard() {
 }
 
 function parseConfigSnapshot(text) {
-  const rawText = String(text || '').trim();
-  if (!rawText) {
-    return null;
-  }
-
-  const objectMatch = rawText.match(/const\s+config\s*=\s*(\{[\s\S]*\})\s*;?\s*$/);
-  const objectSource = objectMatch ? objectMatch[1] : rawText;
-
-  try {
-    const parsed = Function('"use strict"; return (' + objectSource + ');')();
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-      return null;
-    }
-
-    return parsed;
-  } catch (error) {
-    return null;
-  }
-}
-
-function refreshGuiDisplay() {
-  if (!guiInstance || typeof guiInstance.controllersRecursive !== 'function') {
-    return;
-  }
-
-  for (const controller of guiInstance.controllersRecursive()) {
-    controller.updateDisplay();
-  }
+  return parseNamedSnapshot(text, 'config');
 }
 
 function applyConfigSnapshot(snapshot) {
@@ -724,13 +419,12 @@ function applyConfigSnapshot(snapshot) {
   const previousConfig = { ...config };
   let appliedCount = 0;
 
-  for (const key of Object.keys(config)) {
-    if (!Object.prototype.hasOwnProperty.call(snapshot, key)) {
+  for (const [key, incomingValue] of Object.entries(snapshot)) {
+    if (!Object.prototype.hasOwnProperty.call(config, key)) {
       continue;
     }
 
     const currentValue = config[key];
-    const incomingValue = snapshot[key];
     let nextValue = currentValue;
 
     if (typeof currentValue === 'number') {
@@ -758,12 +452,12 @@ function applyConfigSnapshot(snapshot) {
   }
 
   if (appliedCount <= 0) {
-    updateRevealVignetteGuiState();
-    refreshGuiDisplay();
+    guiManager.updateRevealVignetteState();
+    guiManager.refreshDisplay();
     return 0;
   }
 
-  updateRevealVignetteGuiState();
+  guiManager.updateRevealVignetteState();
 
   const geometryChanged = previousConfig.gridSize !== config.gridSize
     || previousConfig.minCellScreenPx !== config.minCellScreenPx;
@@ -780,8 +474,7 @@ function applyConfigSnapshot(snapshot) {
     || previousConfig.revealVignetteSize !== config.revealVignetteSize
     || previousConfig.revealVignetteCurve !== config.revealVignetteCurve;
   const revealImageChanged = previousConfig.revealImageSrc !== config.revealImageSrc;
-  const networkChanged = previousConfig.networkEnabled !== config.networkEnabled
-    || previousConfig.networkUrl !== config.networkUrl;
+  const networkChanged = previousConfig.networkUrl !== config.networkUrl;
 
   if (roomWorldChanged) {
     syncRoomWorldFromConfig({ geometryChanged });
@@ -794,14 +487,10 @@ function applyConfigSnapshot(snapshot) {
   }
 
   if (networkChanged) {
-    if (config.networkEnabled) {
-      connectNetwork({ force: true });
-    } else {
-      disconnectNetwork({ manual: true });
-    }
+    connectNetwork({ force: true });
   }
 
-  refreshGuiDisplay();
+  guiManager.refreshDisplay();
   return appliedCount;
 }
 
@@ -812,53 +501,14 @@ const actions = {
   clearCellStates() {
     state.cellStates.clear();
   },
-  randomizeSpawn() {
-    const player = getLocalPlayer();
-    if (!player) {
-      return;
-    }
-
-    const spawn = randomVisibleIntersection();
-    placePlayerAt(player, spawn);
-    player.visible = true;
-    player.spawnedAt = state.now;
-    resetPlayerNavigation(player);
-
-    if (state.pointer.active) {
-      refreshPointerTargetFromStoredPointer();
-    }
-  },
-  addDebugPlayer() {
-    const id = `${DEBUG_PLAYER_PREFIX}${state.nextDebugPlayerIndex}`;
-    state.nextDebugPlayerIndex += 1;
-
-    const player = ensurePlayer(id, {
-      isLocal: false,
-      visible: true,
-      spawnedAt: state.now,
-    });
-
-    placePlayerAt(player, randomVisibleIntersection());
-    resetPlayerNavigation(player);
-  },
-  clearDebugPlayers() {
-    for (const [playerId] of state.players.entries()) {
-      if (!playerId.startsWith(DEBUG_PLAYER_PREFIX)) {
-        continue;
-      }
-
-      clearPlayerContributions(playerId);
-      state.players.delete(playerId);
-    }
-  },
   reloadRevealImage() {
     loadRevealImage();
   },
-  reconnectNetwork() {
-    connectNetwork({ force: true });
-  },
-  disconnectNetwork() {
-    disconnectNetwork({ manual: true });
+  resetServer() {
+    const resetAccepted = resetServerState();
+    if (!resetAccepted) {
+      window.alert('Reset Server needs an active websocket connection.');
+    }
   },
   async copyConfig() {
     const snapshot = buildConfigSnapshot();
@@ -892,6 +542,19 @@ const actions = {
     console.info('No config values changed from pasted snapshot.');
   },
 };
+
+const guiManager = createGuiManager({
+  config,
+  actions,
+  networkInfo,
+  getViewportSize,
+  clamp,
+  callbacks: {
+    syncRoomWorldFromConfig,
+    loadRevealImage,
+    connectNetwork,
+  },
+});
 
 function createPlayerState(id, overrides = {}) {
   return {
@@ -957,20 +620,12 @@ function clearPlayerContributions(playerId) {
   }
 }
 
-function isDebugPlayerId(playerId) {
-  return String(playerId || '').startsWith(DEBUG_PLAYER_PREFIX);
-}
-
 function isNpcPlayerId(playerId) {
   return String(playerId || '').startsWith(NPC_PLAYER_PREFIX);
 }
 
-function isSyntheticLocalPlayerId(playerId) {
-  return isDebugPlayerId(playerId) || isNpcPlayerId(playerId);
-}
-
 function isRemotePlayerId(playerId) {
-  return playerId !== LOCAL_PLAYER_ID && !isSyntheticLocalPlayerId(playerId);
+  return playerId !== LOCAL_PLAYER_ID && !isNpcPlayerId(playerId);
 }
 
 function getNpcIndexFromPlayerId(playerId) {
@@ -997,38 +652,10 @@ function countVisibleNpcPlayers() {
   return count;
 }
 
-function countVisibleSyntheticLocalPlayers() {
-  let count = 0;
-
-  for (const player of state.players.values()) {
-    if (!player.visible || !isSyntheticLocalPlayerId(player.id)) {
-      continue;
-    }
-
-    count += 1;
-  }
-
-  return count;
-}
-
-function getSocketReadyStateName(socket) {
-  if (!socket) return 'disconnected';
-  switch (socket.readyState) {
-    case WebSocket.CONNECTING:
-      return 'connecting';
-    case WebSocket.OPEN:
-      return 'connected';
-    case WebSocket.CLOSING:
-      return 'closing';
-    case WebSocket.CLOSED:
-    default:
-      return 'disconnected';
-  }
-}
-
 function updateNetworkInfo() {
   networkInfo.status = state.network.status;
   networkInfo.roomId = state.network.roomId || '-';
+  networkInfo.shareUrl = state.network.shareUrl || '-';
 
   if (state.network.roomId) {
     networkInfo.players = Math.max(1, state.network.playerCount || 1);
@@ -1045,10 +672,10 @@ function updateNetworkInfo() {
 }
 
 function getEffectiveRoomPlayerCount() {
-  const syntheticCount = countVisibleSyntheticLocalPlayers();
+  const helperCount = countVisibleNpcPlayers();
 
   if (state.network.roomId) {
-    return Math.max(1, Math.round(state.network.playerCount || 1) + syntheticCount);
+    return Math.max(1, Math.round(state.network.playerCount || 1) + helperCount);
   }
 
   let visiblePlayers = 0;
@@ -1146,11 +773,6 @@ function getEffectiveNodeGlowBlur() {
   return Math.max(0, (Number(config.nodeGlowBlur) || 0) * (playerCount / 3));
 }
 
-function setNetworkStatus(status) {
-  state.network.status = status;
-  updateNetworkInfo();
-}
-
 function normalizeIncomingPlayerId(playerId) {
   return playerId === state.network.serverPlayerId ? LOCAL_PLAYER_ID : playerId;
 }
@@ -1216,9 +838,6 @@ function removeRemotePlayers() {
 
 function resetRemoteState() {
   removeRemotePlayers();
-  state.network.roomId = null;
-  state.network.serverPlayerId = null;
-  state.network.playerCount = 1;
   updateNetworkInfo();
 }
 
@@ -1236,7 +855,7 @@ function syncConfigFromRoomWorld(world) {
   config.revealVignetteEdgeOpacity = world.image.vignetteEdgeOpacity;
   config.revealVignetteSize = world.image.vignetteSize;
   config.revealVignetteCurve = world.image.vignetteCurve;
-  updateRevealVignetteGuiState();
+  guiManager.updateRevealVignetteState();
 }
 
 function clampPlayersToRoomWorld() {
@@ -1369,50 +988,23 @@ function applyRoomPlayersSnapshot(players) {
 function handleNetworkMessage(message) {
   switch (message.type) {
     case 'welcome': {
-      state.network.serverPlayerId = message.playerId || null;
-      state.network.roomId = message.roomId || null;
-      state.network.playerCount = 1;
-
       applyRoomWorld(message.world);
-
-      if (message.shareUrl) {
-        networkInfo.shareUrl = message.shareUrl;
-      }
-
-      setNetworkStatus('connected');
-      updateNetworkInfo();
       sendLocalPlayerState(true);
       break;
     }
 
-    case 'room_info': {
-      if (message.roomId) {
-        state.network.roomId = message.roomId;
-      }
-      if (Number.isFinite(message.playerCount)) {
-        state.network.playerCount = message.playerCount;
-      }
-      updateNetworkInfo();
+    case 'room_info':
       break;
-    }
 
     case 'room_state': {
-      if (message.roomId) {
-        state.network.roomId = message.roomId;
-      }
       applyRoomWorld(message.world);
       applyRoomPlayersSnapshot(Array.isArray(message.players) ? message.players : []);
-      if (Number.isFinite(message.playerCount)) {
-        state.network.playerCount = message.playerCount;
-      }
-      updateNetworkInfo();
       break;
     }
 
     case 'player_state': {
       if (message.playerId) {
         applyIncomingPlayerState(message.playerId, message.player || {});
-        updateNetworkInfo();
       }
       break;
     }
@@ -1431,142 +1023,47 @@ function handleNetworkMessage(message) {
   }
 }
 
-function scheduleReconnect() {
-  if (!config.networkEnabled || !state.network.shouldReconnect) {
-    return;
-  }
+function applyNetworkSnapshot(snapshot) {
+  state.network.status = snapshot.status;
+  state.network.roomId = snapshot.roomId;
+  state.network.serverPlayerId = snapshot.serverPlayerId;
+  state.network.playerCount = snapshot.playerCount;
+  state.network.shareUrl = snapshot.shareUrl;
+  updateNetworkInfo();
+}
 
-  if (state.network.reconnectTimer) {
-    return;
-  }
+const networkController = createNetworkController({
+  getUrl: () => config.networkUrl,
+  getNow: () => state.now,
+  getReconnectDelayMs: () => config.networkReconnectDelayMs,
+  getSendIntervalMs: () => config.networkSendIntervalMs,
+  onSnapshot: applyNetworkSnapshot,
+  onMessage: handleNetworkMessage,
+  onRemoteStateReset: resetRemoteState,
+  onServerReset: () => {
+    window.location.reload();
+  },
+});
 
-  state.network.reconnectTimer = window.setTimeout(() => {
-    state.network.reconnectTimer = null;
-    connectNetwork();
-  }, Math.max(250, config.networkReconnectDelayMs));
+function connectNetwork({ force = false } = {}) {
+  networkController.connect({ force });
 }
 
 function disconnectNetwork({ manual = false } = {}) {
-  state.network.shouldReconnect = !manual;
-
-  if (state.network.reconnectTimer) {
-    window.clearTimeout(state.network.reconnectTimer);
-    state.network.reconnectTimer = null;
-  }
-
-  const socket = state.network.socket;
-  state.network.socket = null;
-
-  if (socket && socket.readyState === WebSocket.OPEN) {
-    socket.close(1000, manual ? 'manual-disconnect' : 'reconnect');
-  }
-
-  setNetworkStatus('disconnected');
-  resetRemoteState();
+  networkController.disconnect({ manual });
 }
 
-function connectNetwork({ force = false } = {}) {
-  if (!config.networkEnabled) {
-    disconnectNetwork({ manual: true });
-    return;
-  }
-
-  if (force) {
-    disconnectNetwork({ manual: false });
-  }
-
-  const existing = state.network.socket;
-  if (existing && (existing.readyState === WebSocket.OPEN || existing.readyState === WebSocket.CONNECTING)) {
-    setNetworkStatus(getSocketReadyStateName(existing));
-    return;
-  }
-
-  const url = String(config.networkUrl || '').trim();
-  if (!url) {
-    setNetworkStatus('no-url');
-    return;
-  }
-
-  state.network.shouldReconnect = true;
-  setNetworkStatus('connecting');
-
-  const socket = new WebSocket(url);
-  state.network.socket = socket;
-
-  socket.addEventListener('open', () => {
-    if (state.network.socket !== socket) {
-      return;
-    }
-
-    state.network.lastPlayerStateSentAt = 0;
-    setNetworkStatus('connected');
-    sendLocalPlayerState(true);
-  });
-
-  socket.addEventListener('message', (event) => {
-    let message = null;
-
-    try {
-      message = JSON.parse(event.data);
-    } catch (error) {
-      console.warn('Invalid network message:', error);
-      return;
-    }
-
-    handleNetworkMessage(message);
-  });
-
-  socket.addEventListener('close', () => {
-    if (state.network.socket === socket) {
-      state.network.socket = null;
-    }
-
-    setNetworkStatus('disconnected');
-    resetRemoteState();
-    scheduleReconnect();
-  });
-
-  socket.addEventListener('error', () => {
-    setNetworkStatus('error');
-  });
-}
-
-function sendNetworkMessage(message) {
-  const socket = state.network.socket;
-
-  if (!socket || socket.readyState !== WebSocket.OPEN) {
-    return false;
-  }
-
-  socket.send(JSON.stringify(message));
-  return true;
+function resetServerState() {
+  return networkController.requestServerReset();
 }
 
 function sendLocalPlayerState(force = false) {
-  if (!config.networkEnabled) {
-    return;
-  }
-
-  const socket = state.network.socket;
-  if (!socket || socket.readyState !== WebSocket.OPEN) {
-    return;
-  }
-
-  if (!force && state.now - state.network.lastPlayerStateSentAt < config.networkSendIntervalMs) {
-    return;
-  }
-
   const player = getLocalPlayer();
   if (!player) {
     return;
   }
 
-  state.network.lastPlayerStateSentAt = state.now;
-
-  sendNetworkMessage({
-    type: 'player_state',
-    player: serializePlayerForNetwork(player),
-  });
+  networkController.sendPlayerState(serializePlayerForNetwork(player), { force });
 }
 
 function clamp(value, min, max) {
@@ -1614,7 +1111,7 @@ function drawBackground() {
   const bottomColor = colorWithAlpha(config.backgroundGradientBottomColor, config.backgroundGradientBottomAlpha);
 
   if (!config.backgroundGradientEnabled) {
-    ctx.fillStyle = config.backgroundColor;
+    ctx.fillStyle = config.flatBackgroundColor;
     ctx.fillRect(0, 0, viewport.width, viewport.height);
     return;
   }
@@ -1770,12 +1267,6 @@ function sameIntersection(a, b) {
   return !!a && !!b && a.col === b.col && a.row === b.row;
 }
 
-function createSegmentKey(a, b) {
-  const left = `${a.col},${a.row}`;
-  const right = `${b.col},${b.row}`;
-  return left < right ? `${left}|${right}` : `${right}|${left}`;
-}
-
 function createCellKey(cell) {
   return `${cell.col},${cell.row}`;
 }
@@ -1794,62 +1285,25 @@ function getCellRect(cell) {
 }
 
 function touchActiveEdge(sourceId, start, end, touchedAt = state.now) {
-  const key = createSegmentKey(start, end);
-  let edge = state.activeEdges.get(key);
-
-  if (!edge) {
-    edge = {
-      start: { ...start },
-      end: { ...end },
-      sources: new Map(),
-    };
-  }
-
-  edge.sources.set(sourceId, {
-    lastTouchedAt: touchedAt,
-  });
-
-  state.activeEdges.set(key, edge);
-}
-
-function getEdgeSourceStrengthMultiplier(source, holdMs, fadeMs) {
-  const hold = Math.max(0, holdMs);
-  const fade = Math.max(1, fadeMs);
-  const age = state.now - source.lastTouchedAt;
-  const fadeProgress = age <= hold ? 0 : clamp((age - hold) / fade, 0, 1);
-  return 1 - fadeProgress;
-}
-
-function getActiveEdgeSourceAlphaMultiplier(source) {
-  return getEdgeSourceStrengthMultiplier(
-    source,
-    config.activeEdgeHoldMs,
-    config.activeEdgeFadeMs,
-  );
+  touchTrailEdge(state.activeEdges, sourceId, start, end, touchedAt);
 }
 
 function getActiveEdgeAlphaMultiplier(edge) {
-  let maxAlpha = 0;
-
-  for (const source of edge.sources.values()) {
-    maxAlpha = Math.max(maxAlpha, getActiveEdgeSourceAlphaMultiplier(source));
-  }
-
-  return maxAlpha;
+  return getTrailEdgeAlphaMultiplier(
+    edge,
+    state.now,
+    config.trailHoldMs,
+    config.trailFadeMs,
+  );
 }
 
 function clearExpiredActiveEdges() {
-  for (const [key, edge] of state.activeEdges.entries()) {
-    for (const [sourceId, source] of edge.sources.entries()) {
-      if (getActiveEdgeSourceAlphaMultiplier(source) <= 0) {
-        edge.sources.delete(sourceId);
-      }
-    }
-
-    if (edge.sources.size === 0) {
-      state.activeEdges.delete(key);
-    }
-  }
+  clearExpiredTrailEdges(
+    state.activeEdges,
+    state.now,
+    config.trailHoldMs,
+    config.trailFadeMs,
+  );
 }
 
 function buildAxisPath(from, to, axis) {
@@ -1964,7 +1418,7 @@ function setNpcPatchCell(patchCell) {
 }
 
 function syncNpcPlayers() {
-  const desiredCount = Math.max(0, Math.round(config.npcCount));
+  const desiredCount = Math.max(0, Math.round(config.npcHelperCount));
   const seenIds = new Set();
 
   for (let index = 1; index <= desiredCount; index += 1) {
@@ -2256,209 +1710,30 @@ function getCellImageOpacity(cell) {
 }
 
 function countLockedCellStates() {
-  let count = 0;
-
-  for (const entry of state.cellStates.values()) {
-    if (clamp(entry.alpha || 0, 0, 1) <= 0.001) {
-      continue;
-    }
-
-    if (entry.lockedUntil > state.now) {
-      count += 1;
-    }
-  }
-
-  return count;
-}
-
-function pointToRectDistance(x, y, rect) {
-  const dx = x < rect.x
-    ? rect.x - x
-    : x > rect.x + rect.width
-      ? x - (rect.x + rect.width)
-      : 0;
-  const dy = y < rect.y
-    ? rect.y - y
-    : y > rect.y + rect.height
-      ? y - (rect.y + rect.height)
-      : 0;
-  return Math.hypot(dx, dy);
-}
-
-function buildCellChargeRateMap() {
-  const chargeRates = new Map();
-  const cols = cellCountX();
-  const rows = cellCountY();
-  if (cols <= 0 || rows <= 0) {
-    return chargeRates;
-  }
-
-  const cellSize = getWorldCellSize();
-  const maxRing = getEffectiveCellChargeMaxRing();
-  const ringFalloff = getEffectiveCellChargeRingFalloff();
-  const ringFloor = config.cellRingFloorEnabled ? getEffectiveCellRingFloor() : 0;
-  const baseChargeRate = getEffectiveBaseCellChargePerSecond() * getEffectiveCellChargeMultiplier();
-
-  for (const player of getRenderablePlayers()) {
-    const minCol = clamp(Math.floor(player.x / cellSize) - maxRing - 1, 0, cols - 1);
-    const maxCol = clamp(Math.floor(player.x / cellSize) + maxRing + 1, 0, cols - 1);
-    const minRow = clamp(Math.floor(player.y / cellSize) - maxRing - 1, 0, rows - 1);
-    const maxRow = clamp(Math.floor(player.y / cellSize) + maxRing + 1, 0, rows - 1);
-
-    for (let col = minCol; col <= maxCol; col += 1) {
-      for (let row = minRow; row <= maxRow; row += 1) {
-        const cell = { col, row };
-        const rect = getCellRect(cell);
-        const distanceCells = pointToRectDistance(player.x, player.y, rect) / cellSize;
-        const ringIndex = distanceCells <= 0.001 ? 0 : Math.ceil(distanceCells - 0.001);
-
-        if (ringIndex > maxRing) {
-          continue;
-        }
-
-        const weight = ringIndex === 0
-          ? 1
-          : Math.max(Math.pow(ringFalloff, ringIndex), ringFloor);
-        if (weight <= 0) {
-          continue;
-        }
-
-        const key = createCellKey(cell);
-        chargeRates.set(key, (chargeRates.get(key) || 0) + baseChargeRate * weight);
-      }
-    }
-  }
-
-  return chargeRates;
-}
-
-function synchronizeLinkedLockedCellGroups() {
-  if (!config.cellLinkedLockFade) {
-    return;
-  }
-
-  const lockedKeys = new Set();
-  for (const [key, entry] of state.cellStates.entries()) {
-    if (entry.lockedUntil > state.now && clamp(entry.alpha || 0, 0, 1) >= 0.999) {
-      lockedKeys.add(key);
-    }
-  }
-
-  if (lockedKeys.size <= 1) {
-    return;
-  }
-
-  const visited = new Set();
-  const directions = [
-    { col: 1, row: 0 },
-    { col: -1, row: 0 },
-    { col: 0, row: 1 },
-    { col: 0, row: -1 },
-  ];
-
-  for (const key of lockedKeys) {
-    if (visited.has(key)) {
-      continue;
-    }
-
-    const queue = [key];
-    const groupEntries = [];
-    let maxLockedUntil = 0;
-
-    while (queue.length > 0) {
-      const currentKey = queue.shift();
-      if (visited.has(currentKey)) {
-        continue;
-      }
-      visited.add(currentKey);
-
-      const entry = state.cellStates.get(currentKey);
-      if (!entry || entry.lockedUntil <= state.now || clamp(entry.alpha || 0, 0, 1) < 0.999) {
-        continue;
-      }
-
-      groupEntries.push(entry);
-      maxLockedUntil = Math.max(maxLockedUntil, entry.lockedUntil);
-
-      for (const direction of directions) {
-        const neighborKey = createCellKey({
-          col: entry.cell.col + direction.col,
-          row: entry.cell.row + direction.row,
-        });
-        if (lockedKeys.has(neighborKey) && !visited.has(neighborKey)) {
-          queue.push(neighborKey);
-        }
-      }
-    }
-
-    if (groupEntries.length <= 1) {
-      continue;
-    }
-
-    for (const entry of groupEntries) {
-      entry.lockedUntil = maxLockedUntil;
-    }
-  }
+  return countLockedCellEntries(state.cellStates, state.now);
 }
 
 function updateCellStates(deltaSeconds) {
-  if (!config.revealEnabled) {
-    state.cellStates.clear();
-    return;
-  }
-
-  synchronizeLinkedLockedCellGroups();
-
-  const chargeRates = buildCellChargeRateMap();
-  const decayMs = getEffectiveCellDecayMs();
-  const lockHoldMs = getEffectiveCellLockHoldMs();
-  const decayPerSecond = decayMs <= 0 ? Number.POSITIVE_INFINITY : 1000 / decayMs;
-  const keys = new Set([
-    ...state.cellStates.keys(),
-    ...chargeRates.keys(),
-  ]);
-
-  for (const key of keys) {
-    const chargeRate = Math.max(0, chargeRates.get(key) || 0);
-    let entry = state.cellStates.get(key);
-
-    if (!entry) {
-      const [colText, rowText] = key.split(',');
-      entry = {
-        cell: {
-          col: Number.parseInt(colText, 10),
-          row: Number.parseInt(rowText, 10),
-        },
-        alpha: 0,
-        lockedUntil: 0,
-      };
-    }
-
-    const isLocked = entry.lockedUntil > state.now;
-    if (isLocked) {
-      entry.alpha = 1;
-      state.cellStates.set(key, entry);
-      continue;
-    }
-
-    entry.lockedUntil = 0;
-    const decayAmount = Number.isFinite(decayPerSecond) ? decayPerSecond * deltaSeconds : 1;
-    const nextAlpha = clamp(entry.alpha + chargeRate * deltaSeconds - decayAmount, 0, 1);
-
-    entry.alpha = nextAlpha;
-
-    if (entry.alpha >= 0.999) {
-      entry.alpha = 1;
-      entry.lockedUntil = state.now + lockHoldMs;
-    }
-
-    if (entry.alpha <= 0.001 && chargeRate <= 0 && entry.lockedUntil <= state.now) {
-      state.cellStates.delete(key);
-      continue;
-    }
-
-    state.cellStates.set(key, entry);
-  }
+  updateCellEnergyState({
+    revealEnabled: config.revealEnabled,
+    cellStates: state.cellStates,
+    now: state.now,
+    deltaSeconds,
+    renderablePlayers: getRenderablePlayers(),
+    cols: cellCountX(),
+    rows: cellCountY(),
+    cellSize: getWorldCellSize(),
+    maxRing: getEffectiveCellChargeMaxRing(),
+    ringFalloff: getEffectiveCellChargeRingFalloff(),
+    ringFloorEnabled: config.cellRingFloorEnabled,
+    ringFloor: getEffectiveCellRingFloor(),
+    chargePerSecond: getEffectiveBaseCellChargePerSecond() * getEffectiveCellChargeMultiplier(),
+    decayMs: getEffectiveCellDecayMs(),
+    lockHoldMs: getEffectiveCellLockHoldMs(),
+    linkedLockFade: config.cellLinkedLockFade,
+    getCellRect,
+    createCellKey,
+  });
 }
 
 function loadRevealImage() {
@@ -2777,21 +2052,21 @@ function drawHeldCellDebug() {
 
 function drawSingleActiveEdgeLine(startX, startY, endX, endY, alphaMultiplier = 1) {
   ctx.save();
-  ctx.lineCap = config.activeEdgeLineCap;
-  ctx.lineJoin = config.activeEdgeLineCap;
+  ctx.lineCap = config.trailLineCap;
+  ctx.lineJoin = config.trailLineCap;
 
   const visualScale = state.view.scale;
-  const lineAlpha = config.activeEdgeOpacity * alphaMultiplier;
-  const glowAlpha = config.activeEdgeGlowOpacity * alphaMultiplier;
-  const glowSpread = Math.max(0, config.activeEdgeGlowWidth * visualScale);
-  const activeLineWidth = Math.max(0.5, config.activeEdgeLineWidth * visualScale);
+  const lineAlpha = config.trailOpacity * alphaMultiplier;
+  const glowAlpha = config.trailGlowOpacity * alphaMultiplier;
+  const glowSpread = Math.max(0, config.trailGlowWidth * visualScale);
+  const activeLineWidth = Math.max(0.5, config.trailLineWidth * visualScale);
   const glowEmitterWidth = Math.max(1.25, activeLineWidth + glowSpread * 0.28);
   const glowStrokeAlpha = Math.min(1, glowAlpha * 0.16);
 
-  if (glowAlpha > 0 && (config.activeEdgeGlowBlur > 0 || glowSpread > 0)) {
-    ctx.shadowBlur = config.activeEdgeGlowBlur * visualScale + glowSpread;
-    ctx.shadowColor = colorWithAlpha(config.activeEdgeGlowColor, glowAlpha);
-    ctx.strokeStyle = colorWithAlpha(config.activeEdgeGlowColor, glowStrokeAlpha);
+  if (glowAlpha > 0 && (config.trailGlowBlur > 0 || glowSpread > 0)) {
+    ctx.shadowBlur = config.trailGlowBlur * visualScale + glowSpread;
+    ctx.shadowColor = colorWithAlpha(config.trailGlowColor, glowAlpha);
+    ctx.strokeStyle = colorWithAlpha(config.trailGlowColor, glowStrokeAlpha);
     ctx.lineWidth = glowEmitterWidth;
     ctx.beginPath();
     ctx.moveTo(startX, startY);
@@ -2801,7 +2076,7 @@ function drawSingleActiveEdgeLine(startX, startY, endX, endY, alphaMultiplier = 
 
   ctx.shadowBlur = 0;
   ctx.shadowColor = 'rgba(0, 0, 0, 0)';
-  ctx.strokeStyle = colorWithAlpha(config.activeEdgeColor, lineAlpha);
+  ctx.strokeStyle = colorWithAlpha(config.trailColor, lineAlpha);
   ctx.lineWidth = activeLineWidth;
   ctx.beginPath();
   ctx.moveTo(startX, startY);
@@ -2812,7 +2087,7 @@ function drawSingleActiveEdgeLine(startX, startY, endX, endY, alphaMultiplier = 
 }
 
 function drawActiveEdges() {
-  if (!config.activeEdgeEnabled) {
+  if (!config.trailEnabled) {
     return;
   }
 
@@ -2837,7 +2112,7 @@ function drawActiveEdges() {
 }
 
 function drawActiveSegments() {
-  if (!config.activeEdgeEnabled) {
+  if (!config.trailEnabled) {
     return;
   }
 
@@ -2963,7 +2238,7 @@ function drawDebugTarget() {
 }
 
 function drawDebugIntersections() {
-  if (!config.showIntersections) {
+  if (!config.showGridIntersections) {
     return;
   }
 
@@ -3046,13 +2321,12 @@ function drawViewportDebug() {
 }
 
 function drawTrailBuffOverlay() {
-  if (!config.showTrailBuffOverlay) {
+  if (!config.showEnergyOverlay) {
     return;
   }
 
   const playerCount = getEffectiveRoomPlayerCount();
-  const npcCount = countVisibleNpcPlayers();
-  const syntheticCount = countVisibleSyntheticLocalPlayers();
+  const helperCount = countVisibleNpcPlayers();
   const cellEnergyScale = getCellEnergyEffectScale();
   const coopBuffScale = getCoopBuffEffectScale();
   const effectiveChargePerSecond = getEffectiveBaseCellChargePerSecond();
@@ -3067,29 +2341,28 @@ function drawTrailBuffOverlay() {
   const lines = [
     'coop buffs',
     `players ${playerCount} (${sourceLabel})`,
-    `local synth ${syntheticCount}`,
-    `local npcs ${npcCount}`,
+    `local helpers ${helperCount}`,
     `energy scale ${formatMetric(cellEnergyScale)}x`,
     `buff scale ${formatMetric(coopBuffScale)}x`,
     `charge base ${formatMetric(config.cellChargePerSecond)}/s`,
-    `charge +/player ${formatMetric(config.cellChargeBuffPerPlayer)}x`,
+    `charge bonus/player ${formatMetric(config.cellChargeBuffPerPlayer)}x`,
     `charge live ${formatMetric(effectiveChargePerSecond * chargeMultiplier)}/s`,
     `falloff base ${formatMetric(config.cellChargeRingFalloff)}`,
-    `falloff +/player ${formatMetric(config.cellRingFalloffBonusPerPlayer)}`,
+    `falloff bonus/player ${formatMetric(config.cellRingFalloffBonusPerPlayer)}`,
     `falloff live ${formatMetric(effectiveRingFalloff)}`,
     `floor ${config.cellRingFloorEnabled ? 'on' : 'off'}`,
     `floor base ${formatMetric(config.cellRingFloor)}`,
-    `floor +/player ${formatMetric(config.cellRingFloorBonusPerPlayer)}`,
+    `floor bonus/player ${formatMetric(config.cellRingFloorBonusPerPlayer)}`,
     `floor live ${formatMetric(effectiveRingFloor)}`,
     `rings base ${formatMetric(config.cellChargeMaxRing)}`,
-    `rings +/player ${formatMetric(config.cellRingCountBonusPerPlayer)}`,
+    `rings bonus/player ${formatMetric(config.cellRingCountBonusPerPlayer)}`,
     `rings live ${formatMetric(effectiveMaxRing)}`,
     `linked fade ${config.cellLinkedLockFade ? 'on' : 'off'}`,
     `decay base ${formatMetric(config.cellDecayMs)}ms`,
-    `decay +/player ${formatMetric(config.cellDecayBonusMsPerPlayer)}ms`,
+    `decay bonus/player ${formatMetric(config.cellDecayBonusMsPerPlayer)}ms`,
     `decay live ${formatMetric(effectiveDecayMs)}ms`,
     `lock base ${formatMetric(config.cellLockHoldMs)}ms`,
-    `lock +/player ${formatMetric(config.cellLockHoldBonusMsPerPlayer)}ms`,
+    `lock bonus/player ${formatMetric(config.cellLockHoldBonusMsPerPlayer)}ms`,
     `lock live ${formatMetric(effectiveLockHoldMs)}ms`,
     `locked cells ${formatMetric(lockedCells)}`,
   ];
@@ -3158,7 +2431,6 @@ function resize() {
 
   ctx.setTransform(viewport.dpr, 0, 0, viewport.dpr, 0, 0);
   updateViewTransform();
-  rebuildRevealSource();
 
   if (state.pointer.active) {
     refreshPointerTargetFromStoredPointer();
@@ -3188,7 +2460,7 @@ canvas.addEventListener('pointerdown', (event) => {
 
 function handleViewportChange() {
   resize();
-  applyGuiLayout(guiInstance);
+  guiManager.applyLayout();
 }
 
 let resizeFrame = 0;
@@ -3240,300 +2512,10 @@ function animate(now) {
   requestAnimationFrame(animate);
 }
 
-function setupGui() {
-  const gui = new GUI({ title: 'Grid Controls' });
-  guiInstance = gui;
-  ensureGuiHelpOverlay(gui);
-
-  const backgroundFolder = gui.addFolder('Background');
-  backgroundFolder.add(config, 'backgroundGradientEnabled').name('Enabled');
-  backgroundFolder.addColor(config, 'backgroundGradientTopColor').name('Top Color');
-  backgroundFolder.addColor(config, 'backgroundGradientBottomColor').name('Bottom Color');
-  backgroundFolder.add(config, 'backgroundGradientTopAlpha', 0, 1, 0.01).name('Top Alpha');
-  backgroundFolder.add(config, 'backgroundGradientBottomAlpha', 0, 1, 0.01).name('Bottom Alpha');
-  backgroundFolder.close();
-
-  const sceneFolder = gui.addFolder('Scene');
-  sceneFolder.addColor(config, 'backgroundColor').name('Fallback');
-  sceneFolder.close();
-
-  const gridFolder = gui.addFolder('Base Grid');
-  gridFolder.add(config, 'gridSize', 40, 200, 1)
-    .name('World Cell')
-    .onChange(() => {
-      syncRoomWorldFromConfig({ geometryChanged: true });
-    });
-  gridFolder.add(config, 'minCellScreenPx', 18, 120, 1)
-    .name('Min Screen Cell')
-    .onChange(() => {
-      syncRoomWorldFromConfig();
-    });
-  gridFolder.addColor(config, 'gridColor').name('Color');
-  gridFolder.add(config, 'gridOpacity', 0, 1, 0.01).name('Opacity');
-  gridFolder.add(config, 'gridLineWidth', 1, 4, 1).name('Line Width');
-  gridFolder.add(config, 'gridOverReveal').name('Over Reveal');
-  gridFolder.close();
-
-  const motionFolder = gui.addFolder('Motion');
-  motionFolder.add(config, 'spawnDelayMs', 0, 3000, 10).name('Spawn Delay');
-  motionFolder.add(config, 'spawnFadeMs', 0, 2000, 10).name('Spawn Fade');
-  motionFolder.add(config, 'followPointerDelayMs', 0, 3000, 10).name('Follow Delay');
-  motionFolder.add(config, 'moveSpeed', 60, 1200, 1).name('Speed');
-  motionFolder.add(config, 'routePreference', ['horizontal-first', 'vertical-first', 'alternating']).name('Routing');
-  motionFolder.add(config, 'turnPauseMs', 0, 500, 5).name('Turn Pause');
-  motionFolder.add(config, 'segmentEasing', 0, 1, 0.01).name('Smoothing');
-  motionFolder.close();
-
-  const nodeFolder = gui.addFolder('Node');
-  nodeFolder.addColor(config, 'nodeColor').name('Fill');
-  nodeFolder.addColor(config, 'nodeBorderColor').name('Border');
-  nodeFolder.add(config, 'nodeBorderOpacity', 0, 1, 0.01).name('Border Alpha');
-  nodeFolder.add(config, 'nodeBorderWidth', 0, 4, 0.5).name('Border Width');
-  nodeFolder.addColor(config, 'nodeGlowColor').name('Glow');
-  nodeFolder.add(config, 'nodeGlowOpacity', 0, 1, 0.01).name('Glow Alpha');
-  nodeFolder.add(config, 'nodeGlowBlur', 0, 60, 1).name('Glow Blur');
-  nodeFolder.add(config, 'nodeWidth', 6, 64, 1).name('Width');
-  nodeFolder.add(config, 'nodeHeight', 6, 48, 1).name('Height');
-  nodeFolder.add(config, 'nodeRadius', 0, 24, 1).name('Corner Radius');
-  nodeFolder.add(config, 'nodePulseAmplitude', 0, 0.3, 0.005).name('Pulse Amount');
-  nodeFolder.add(config, 'pulseSpeed', 0, 12, 0.05).name('Pulse Speed');
-  nodeFolder.add(config, 'nodeSpawnStartScale', 1, 16, 0.1).name('Spawn Start Scale');
-  nodeFolder.add(config, 'nodeSpawnBounce', 0, 3, 0.05).name('Spawn Bounce');
-  nodeFolder.close();
-
-  const activeEdgeFolder = gui.addFolder('Trails');
-  activeEdgeFolder.add(config, 'activeEdgeEnabled').name('Enabled');
-  activeEdgeFolder.addColor(config, 'activeEdgeColor').name('Line');
-  activeEdgeFolder.add(config, 'activeEdgeOpacity', 0, 1, 0.01).name('Line Alpha');
-  activeEdgeFolder.addColor(config, 'activeEdgeGlowColor').name('Glow');
-  activeEdgeFolder.add(config, 'activeEdgeGlowOpacity', 0, 1, 0.01).name('Glow Alpha');
-  activeEdgeFolder.add(config, 'activeEdgeLineWidth', 1, 12, 0.1).name('Line Width');
-  activeEdgeFolder.add(config, 'activeEdgeGlowWidth', 0, 28, 0.5).name('Glow Spread');
-  activeEdgeFolder.add(config, 'activeEdgeLineCap', ['round', 'butt', 'square']).name('Cap Style');
-  activeEdgeFolder.add(config, 'activeEdgeGlowBlur', 0, 60, 1).name('Glow Blur');
-  activeEdgeFolder.add(config, 'activeEdgeHoldMs', 0, 4000, 10).name('Hold Time');
-  activeEdgeFolder.add(config, 'activeEdgeFadeMs', 50, 6000, 10).name('Fade Time');
-  activeEdgeFolder.close();
-
-  const buffsFolder = gui.addFolder('Buffs');
-  attachGuiHelp(
-    buffsFolder.add(config, 'coopBuffEffect', 0, 3, 0.05).name('Co-op Buff Effect'),
-    GUI_HELP_TEXT.coopBuffEffect,
-  );
-  attachGuiHelp(
-    buffsFolder.add(config, 'cellChargeBuffPerPlayer', 0, 2, 0.05).name('Charge +/Player'),
-    GUI_HELP_TEXT.cellChargeBuffPerPlayer,
-  );
-  attachGuiHelp(
-    buffsFolder.add(config, 'cellRingFalloffBonusPerPlayer', 0, 0.5, 0.05).name('Falloff +/Player'),
-    GUI_HELP_TEXT.cellRingFalloffBonusPerPlayer,
-  );
-  attachGuiHelp(
-    buffsFolder.add(config, 'cellRingFloorBonusPerPlayer', 0, 0.5, 0.05).name('Floor +/Player'),
-    GUI_HELP_TEXT.cellRingFloorBonusPerPlayer,
-  );
-  attachGuiHelp(
-    buffsFolder.add(config, 'cellRingCountBonusPerPlayer', 0, 4, 0.25).name('Rings +/Player'),
-    GUI_HELP_TEXT.cellRingCountBonusPerPlayer,
-  );
-  attachGuiHelp(
-    buffsFolder.add(config, 'cellDecayBonusMsPerPlayer', 0, 4000, 50).name('Decay +/Player'),
-    GUI_HELP_TEXT.cellDecayBonusMsPerPlayer,
-  );
-  attachGuiHelp(
-    buffsFolder.add(config, 'cellLockHoldBonusMsPerPlayer', 0, 4000, 50).name('Hold +/Player'),
-    GUI_HELP_TEXT.cellLockHoldBonusMsPerPlayer,
-  );
-  buffsFolder.open();
-
-  const npcFolder = gui.addFolder('NPCs');
-  attachGuiHelp(
-    npcFolder.add(config, 'npcCount', 0, 5, 1).name('NPC Count'),
-    GUI_HELP_TEXT.npcCount,
-  );
-  npcFolder.open();
-
-  const revealFolder = gui.addFolder('Reveal');
-  revealFolder.add(config, 'revealEnabled').name('Enabled');
-  revealFolder.add(config, 'revealImageSrc').name('Image Src').onFinishChange(() => {
-    loadRevealImage();
-  });
-  revealFolder.add(config, 'revealImageFitMode', ['native', 'contain', 'cover'])
-  .name('Image Fit')
-  .onChange(() => {
-    syncRoomWorldFromConfig();
-  });
-
-revealFolder.add(config, 'revealImageScale', 0.1, 4, 0.01)
-  .name('Image Scale')
-  .onChange(() => {
-    syncRoomWorldFromConfig();
-  });
-
-revealFolder.add(config, 'revealImageOffsetX', -4000, 4000, 1)
-  .name('Image Offset X')
-  .onChange(() => {
-    syncRoomWorldFromConfig();
-  });
-
-  revealFolder.add(config, 'revealImageOffsetY', -4000, 4000, 1)
-  .name('Image Offset Y')
-  .onChange(() => {
-    syncRoomWorldFromConfig();
-  });
-
-  revealFolder.add(config, 'revealVignetteEnabled')
-    .name('Vignette')
-    .onChange(() => {
-      syncRoomWorldFromConfig();
-    });
-  revealFolder.add(config, 'revealVignetteMode', ['alpha', 'color'])
-    .name('Vignette Mode')
-    .onChange(() => {
-      updateRevealVignetteGuiState();
-      syncRoomWorldFromConfig();
-    });
-  guiControllers.revealVignetteColor = revealFolder.addColor(config, 'revealVignetteColor')
-    .name('Vignette Color')
-    .onChange(() => {
-      syncRoomWorldFromConfig();
-    });
-  revealFolder.add(config, 'revealVignetteInnerOpacity', 0, 1, 0.01)
-    .name('Vignette Inner')
-    .onChange(() => {
-      syncRoomWorldFromConfig();
-    });
-  revealFolder.add(config, 'revealVignetteEdgeOpacity', 0, 1, 0.01)
-    .name('Vignette Edge')
-    .onChange(() => {
-      syncRoomWorldFromConfig();
-    });
-  revealFolder.add(config, 'revealVignetteSize', 0, 1000, 1)
-    .name('Vignette Size')
-    .onChange(() => {
-      syncRoomWorldFromConfig();
-    });
-  revealFolder.add(config, 'revealVignetteCurve', 0.1, 6, 0.1)
-    .name('Vignette Curve')
-    .onChange(() => {
-      syncRoomWorldFromConfig();
-    });
-
-  revealFolder.add(config, 'revealImageOpacity', 0, 1, 0.01).name('Image Alpha');
-  revealFolder.addColor(config, 'revealTintColor').name('Tint');
-  revealFolder.add(config, 'revealTintOpacity', 0, 1, 0.01).name('Tint Alpha');
-  revealFolder.close();
-
-  const cellEnergyFolder = gui.addFolder('Cell Energy');
-  attachGuiHelp(
-    cellEnergyFolder.add(config, 'cellEnergyEffect', 0, 3, 0.05).name('Cell Energy Effect'),
-    GUI_HELP_TEXT.cellEnergyEffect,
-  );
-  attachGuiHelp(
-    cellEnergyFolder.add(config, 'cellChargePerSecond', 0, 4, 0.05).name('Core Charge /s'),
-    GUI_HELP_TEXT.cellChargePerSecond,
-  );
-  attachGuiHelp(
-    cellEnergyFolder.add(config, 'cellChargeRingFalloff', 0, 1, 0.05).name('Ring Falloff'),
-    GUI_HELP_TEXT.cellChargeRingFalloff,
-  );
-  attachGuiHelp(
-    cellEnergyFolder.add(config, 'cellRingFloorEnabled').name('Ring Floor Enabled'),
-    GUI_HELP_TEXT.cellRingFloorEnabled,
-  );
-  attachGuiHelp(
-    cellEnergyFolder.add(config, 'cellRingFloor', 0, 1, 0.05).name('Ring Floor'),
-    GUI_HELP_TEXT.cellRingFloor,
-  );
-  attachGuiHelp(
-    cellEnergyFolder.add(config, 'cellChargeMaxRing', 0, 6, 1).name('Ring Count'),
-    GUI_HELP_TEXT.cellChargeMaxRing,
-  );
-  attachGuiHelp(
-    cellEnergyFolder.add(config, 'cellDecayMs', 100, 8000, 50).name('Decay Time'),
-    GUI_HELP_TEXT.cellDecayMs,
-  );
-  attachGuiHelp(
-    cellEnergyFolder.add(config, 'cellLockHoldMs', 0, 8000, 50).name('Lock Hold'),
-    GUI_HELP_TEXT.cellLockHoldMs,
-  );
-  attachGuiHelp(
-    cellEnergyFolder.add(config, 'cellLinkedLockFade').name('Linked Lock Fade'),
-    GUI_HELP_TEXT.cellLinkedLockFade,
-  );
-  cellEnergyFolder.open();
-
-  const debugFolder = gui.addFolder('Debug');
-  attachGuiHelp(debugFolder.add(config, 'showTarget').name('Target'), GUI_HELP_TEXT.showTarget);
-  attachGuiHelp(
-    debugFolder.add(config, 'showIntersections').name('Intersections'),
-    GUI_HELP_TEXT.showIntersections,
-  );
-  attachGuiHelp(
-    debugFolder.add(config, 'showHeldCells').name('Cell Opacity'),
-    GUI_HELP_TEXT.showHeldCells,
-  );
-  attachGuiHelp(
-    debugFolder.add(config, 'showTrailBuffOverlay').name('Co-op Overlay'),
-    GUI_HELP_TEXT.showTrailBuffOverlay,
-  );
-  attachGuiHelp(
-    debugFolder.add(config, 'showPlayerIds').name('Player IDs'),
-    GUI_HELP_TEXT.showPlayerIds,
-  );
-  attachGuiHelp(
-    debugFolder.add(config, 'showViewportDebug').name('Viewport Metrics'),
-    GUI_HELP_TEXT.showViewportDebug,
-  );
-  debugFolder.open();
-
-  updateRevealVignetteGuiState();
-
-  const networkFolder = gui.addFolder('Network');
-  networkFolder.add(config, 'networkEnabled').name('Enabled').onChange((value) => {
-    if (value) {
-      connectNetwork({ force: true });
-    } else {
-      disconnectNetwork({ manual: true });
-    }
-  });
-  networkFolder.add(config, 'networkUrl').name('WS URL').onFinishChange(() => {
-    if (config.networkEnabled) {
-      connectNetwork({ force: true });
-    }
-  });
-  networkFolder.add(config, 'networkSendIntervalMs', 20, 250, 5).name('Send Interval');
-  networkFolder.add(config, 'networkReconnectDelayMs', 250, 5000, 50).name('Reconnect Delay');
-  networkFolder.add(networkInfo, 'status').name('Status').listen();
-  networkFolder.add(networkInfo, 'roomId').name('Room').listen();
-  networkFolder.add(networkInfo, 'players').name('Players').listen();
-  networkFolder.add(networkInfo, 'shareUrl').name('Share URL').listen();
-  networkFolder.close();
-
-  const utilitiesFolder = gui.addFolder('Utilities');
-  utilitiesFolder.add(actions, 'clearActiveEdges').name('Clear Trails');
-  utilitiesFolder.add(actions, 'clearCellStates').name('Clear Cell States');
-  utilitiesFolder.add(actions, 'randomizeSpawn').name('Random Spawn');
-  utilitiesFolder.add(actions, 'reconnectNetwork').name('Reconnect Network');
-  utilitiesFolder.add(actions, 'disconnectNetwork').name('Disconnect Network');
-  utilitiesFolder.add(actions, 'addDebugPlayer').name('Add Debug Player');
-  utilitiesFolder.add(actions, 'clearDebugPlayers').name('Clear Debug Players');
-  utilitiesFolder.add(actions, 'reloadRevealImage').name('Reload Reveal Image');
-  utilitiesFolder.add(actions, 'copyConfig').name('Copy Config');
-  utilitiesFolder.add(actions, 'pasteConfig').name('Paste Config');
-  utilitiesFolder.close();
-
-  bindGuiHelpFromMap(gui);
-  applyGuiLayout(gui);
-}
-
 resize();
-setupGui();
+guiManager.setup();
 loadRevealImage();
-
-if (config.networkEnabled) {
-  connectNetwork();
-}
+connectNetwork();
 
 window.addEventListener('beforeunload', () => {
   disconnectNetwork({ manual: true });

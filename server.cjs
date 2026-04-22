@@ -263,6 +263,35 @@ function cleanupConnection(ws) {
   sendRoomInfo(room);
 }
 
+function resetServerState() {
+  const connectedClients = [];
+
+  for (const room of rooms.values()) {
+    for (const client of room.clients) {
+      connectedClients.push(client);
+    }
+  }
+
+  rooms.clear();
+  nextPlayerId = 1;
+  nextRoomId = 1;
+
+  for (const ws of connectedClients) {
+    ws._cleanedUp = true;
+    ws.room = null;
+
+    send(ws, { type: 'server_reset' });
+
+    setTimeout(() => {
+      if (ws.readyState === ws.OPEN || ws.readyState === ws.CONNECTING) {
+        ws.close(1012, 'server-reset');
+      }
+    }, 25);
+  }
+
+  console.log('Server state reset. Cleared rooms and disconnected clients.');
+}
+
 const server = http.createServer();
 const wss = new WebSocketServer({ server, maxPayload: MAX_MESSAGE_BYTES });
 
@@ -314,7 +343,13 @@ wss.on('connection', (ws) => {
     }
 
     switch (message.type) {
+      case 'reset_server': {
+        resetServerState();
+        break;
+      }
+
       case 'player_state': {
+        const now = Date.now();
         if (now - ws.lastPlayerStateAt < PLAYER_UPDATE_MIN_INTERVAL_MS) {
           return;
         }

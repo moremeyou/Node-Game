@@ -43,6 +43,22 @@ body {
   cursor: crosshair;
 }
 
+.build-info-badge {
+  position: fixed;
+  right: calc(10px + var(--safe-right));
+  bottom: calc(8px + var(--safe-bottom));
+  z-index: 20;
+  padding: 4px 6px;
+  font: 10px/1.2 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  color: rgba(255, 255, 255, 0.58);
+  background: rgba(0, 0, 0, 0.28);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 4px;
+  pointer-events: none;
+  user-select: none;
+  white-space: nowrap;
+}
+
 .lil-gui {
   --background-color: rgba(14, 14, 16, 0.92);
   --widget-color: rgba(64, 64, 72, 0.9);

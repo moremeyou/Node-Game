@@ -21,10 +21,12 @@ function formatAmsterdamBuildTimestamp(date = new Date()) {
   return `${parts.hour}:${parts.minute}:${parts.second}-${parts.day}/${parts.month}`;
 }
 
-const buildTimestamp = formatAmsterdamBuildTimestamp();
-
-export default defineConfig({
+export default defineConfig(({ command }) => ({
   define: {
-    __BUILD_TIMESTAMP__: JSON.stringify(buildTimestamp),
+    __BUILD_TIMESTAMP__: JSON.stringify(
+      command === 'build'
+        ? formatAmsterdamBuildTimestamp()
+        : '',
+    ),
   },
-});
+}));
