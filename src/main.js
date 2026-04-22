@@ -143,7 +143,8 @@ const config = {
   trailGlowBlur: 32,
   trailHoldMs: 50,
   trailFadeMs: 670,
-  npcHelperCount: 1,
+  npcHelperCount: 0,
+  buffOnlyHelpersEnabled: true,
   revealEnabled: true,
   revealImageSrc: "/teaser-hidden.jpg",
   revealImageFitMode: 'native',
@@ -160,33 +161,36 @@ const config = {
   revealImageOpacity: 1,
   revealTintColor: "#000000",
   revealTintOpacity: 0,
-  cellChargePerSecond: 1.1,
-  cellChargeRingFalloff: 0.5,
-  cellRingFloorEnabled: true,
-  cellRingFloor: 0,
+  cellChargePerSecond: 1.5,
+  cellChargeRingFalloff: 0.15,
+  cellCornerChargeFactor: 1,
   cellChargeMaxRing: 2,
   cellEnergyEffect: 1,
   coopBuffEffect: 1,
-  cellChargeBuffPerPlayer: 0,
-  cellRingFalloffBonusPerPlayer: 0,
-  cellRingFloorBonusPerPlayer: 0,
-  cellRingCountBonusPerPlayer: 0,
+  cellChargeBuffPerPlayer: 0.15,
+  cellRingFalloffBonusPerPlayer: 0.05,
+  cellRoundnessBonusPerPlayer: 0,
+  cellRingCountBonusPerPlayer: 0.25,
   cellDecayMs: 1800,
   cellDecayBonusMsPerPlayer: 400,
   cellLockHoldMs: 1600,
-  cellLockHoldBonusMsPerPlayer: 800,
+  cellLockHoldBonusMsPerPlayer: 1000,
   cellLinkedLockFade: true,
   gridOverReveal: true,
   showTarget: false,
   showGridIntersections: true,
   showHeldCells: false,
-  showEnergyOverlay: false,
+  showEnergyOverlay: true,
   showPlayerIds: false,
   showViewportDebug: false,
+  allowDesktopNodeLock: true,
+  desktopJumpLockMode: true,
   networkUrl: getDefaultNetworkUrl(),
   networkSendIntervalMs: 50,
   networkReconnectDelayMs: 1500,
 };
+
+const DEFAULT_CONFIG = Object.freeze({ ...config });
 
 function createDefaultRoomWorld() {
   return {
@@ -334,6 +338,11 @@ const state = {
     playerCount: 1,
     shareUrl: '-',
   },
+  energyOverlay: {
+    bounds: null,
+    text: '',
+    copyFeedbackUntil: 0,
+  },
 };
 
 const assets = {
@@ -354,6 +363,22 @@ const networkInfo = {
 
 function buildConfigSnapshot() {
   return buildNamedSnapshot('config', config);
+}
+
+function buildChangedConfigObject() {
+  const changedConfig = {};
+
+  for (const key of Object.keys(DEFAULT_CONFIG)) {
+    if (!Object.is(config[key], DEFAULT_CONFIG[key])) {
+      changedConfig[key] = config[key];
+    }
+  }
+
+  return changedConfig;
+}
+
+function buildChangedConfigSnapshot() {
+  return buildNamedSnapshot('config', buildChangedConfigObject());
 }
 
 async function copyTextToClipboard(text) {
@@ -504,6 +529,16 @@ const actions = {
   reloadRevealImage() {
     loadRevealImage();
   },
+  resetDefaultConfig() {
+    const appliedCount = applyConfigSnapshot(DEFAULT_CONFIG);
+
+    if (appliedCount > 0) {
+      console.info('Reset config to defaults.');
+      return;
+    }
+
+    console.info('Config already matches defaults.');
+  },
   resetServer() {
     const resetAccepted = resetServerState();
     if (!resetAccepted) {
@@ -520,6 +555,19 @@ const actions = {
     }
 
     window.prompt('Copy config snapshot:', snapshot);
+  },
+  async copyChangedConfig() {
+    const changedConfig = buildChangedConfigObject();
+    const changedCount = Object.keys(changedConfig).length;
+    const snapshot = buildNamedSnapshot('config', changedConfig);
+    const copied = await copyTextToClipboard(snapshot);
+
+    if (copied) {
+      console.info(`Copied ${changedCount} changed config value${changedCount === 1 ? '' : 's'}.`);
+      return;
+    }
+
+    window.prompt('Copy changed config snapshot:', snapshot);
   },
   async pasteConfig() {
     const snapshotText = await readTextFromClipboard();
@@ -545,6 +593,7 @@ const actions = {
 
 const guiManager = createGuiManager({
   config,
+  baselineConfig: DEFAULT_CONFIG,
   actions,
   networkInfo,
   getViewportSize,
@@ -570,6 +619,7 @@ function createPlayerState(id, overrides = {}) {
     segment: null,
     turnHoldUntil: 0,
     lastNetworkStateAt: 0,
+    lockedInPlace: false,
     ...overrides,
   };
 }
@@ -652,13 +702,20 @@ function countVisibleNpcPlayers() {
   return count;
 }
 
+function getConfiguredNpcHelperCount() {
+  return Math.max(0, Math.round(Number(config.npcHelperCount) || 0));
+}
+
 function updateNetworkInfo() {
   networkInfo.status = state.network.status;
   networkInfo.roomId = state.network.roomId || '-';
   networkInfo.shareUrl = state.network.shareUrl || '-';
+  const helperCount = config.buffOnlyHelpersEnabled
+    ? getConfiguredNpcHelperCount()
+    : countVisibleNpcPlayers();
 
   if (state.network.roomId) {
-    networkInfo.players = Math.max(1, state.network.playerCount || 1);
+    networkInfo.players = Math.max(1, Math.round(state.network.playerCount || 1) + helperCount);
     return;
   }
 
@@ -668,11 +725,13 @@ function updateNetworkInfo() {
       players += 1;
     }
   }
-  networkInfo.players = Math.max(1, players);
+  networkInfo.players = Math.max(1, players + helperCount);
 }
 
 function getEffectiveRoomPlayerCount() {
-  const helperCount = countVisibleNpcPlayers();
+  const helperCount = config.buffOnlyHelpersEnabled
+    ? getConfiguredNpcHelperCount()
+    : countVisibleNpcPlayers();
 
   if (state.network.roomId) {
     return Math.max(1, Math.round(state.network.playerCount || 1) + helperCount);
@@ -685,7 +744,7 @@ function getEffectiveRoomPlayerCount() {
     }
   }
 
-  return Math.max(1, visiblePlayers);
+  return Math.max(1, visiblePlayers + helperCount);
 }
 
 function getEffectiveCoopExtraPlayers() {
@@ -721,23 +780,22 @@ function getEffectiveCellChargeRingFalloff() {
   return clamp(buffedFalloff, 0, 1);
 }
 
-function getEffectiveCellRingFloor() {
-  const baseFloor = clamp((Number(config.cellRingFloor) || 0) * getCellEnergyEffectScale(), 0, 1);
-  const perExtraPlayerBonus = Math.max(0, Number(config.cellRingFloorBonusPerPlayer) || 0);
-  const buffedFloor = baseFloor
+function getEffectiveCellCornerChargeFactor() {
+  const baseRoundness = clamp(Number(config.cellCornerChargeFactor) || 0, 0, 1);
+  const perExtraPlayerBonus = Math.max(0, Number(config.cellRoundnessBonusPerPlayer) || 0);
+  const buffedRoundness = baseRoundness
     + perExtraPlayerBonus * getCoopBuffEffectScale() * getEffectiveCoopExtraPlayers();
-  return clamp(buffedFloor, 0, 1);
+  return clamp(buffedRoundness, 0, 1);
 }
 
 function getEffectiveCellChargeMaxRing() {
-  const baseRingCount = Math.max(
-    0,
-    Math.floor((Number(config.cellChargeMaxRing) || 0) * getCellEnergyEffectScale() + 1e-6),
-  );
+  const baseRingCount = Math.max(0, (Number(config.cellChargeMaxRing) || 0) * getCellEnergyEffectScale());
   const perExtraPlayerBonus = Math.max(0, Number(config.cellRingCountBonusPerPlayer) || 0);
-  const buffedRingCount = baseRingCount
-    + perExtraPlayerBonus * getCoopBuffEffectScale() * getEffectiveCoopExtraPlayers();
-  return Math.max(0, Math.floor(buffedRingCount + 1e-6));
+  return Math.max(
+    0,
+    baseRingCount
+    + perExtraPlayerBonus * getCoopBuffEffectScale() * getEffectiveCoopExtraPlayers(),
+  );
 }
 
 function getEffectiveCellDecayMs() {
@@ -1418,7 +1476,7 @@ function setNpcPatchCell(patchCell) {
 }
 
 function syncNpcPlayers() {
-  const desiredCount = Math.max(0, Math.round(config.npcHelperCount));
+  const desiredCount = config.buffOnlyHelpersEnabled ? 0 : getConfiguredNpcHelperCount();
   const seenIds = new Set();
 
   for (let index = 1; index <= desiredCount; index += 1) {
@@ -1527,8 +1585,19 @@ function placePlayerAt(player, intersection) {
   player.y = point.y;
 }
 
+function isDesktopPointerMode() {
+  return !!(
+    window.matchMedia
+    && window.matchMedia('(hover: hover) and (pointer: fine)').matches
+  );
+}
+
 function playerCanFollowPointer(player) {
   if (!player || !player.visible || player.spawnedAt == null) {
+    return false;
+  }
+
+  if (player.lockedInPlace) {
     return false;
   }
 
@@ -1569,6 +1638,58 @@ function startNextSegment(player) {
     progress: 0,
     axis: startIntersection.col !== nextIntersection.col ? 'horizontal' : 'vertical',
   };
+}
+
+function stopPlayerAtNearestIntersection(player) {
+  if (!player) {
+    return;
+  }
+
+  let snapTarget = player.current ? { ...player.current } : null;
+
+  if (player.segment) {
+    const startPoint = toPoint(player.segment.startIntersection);
+    const endPoint = toPoint(player.segment.endIntersection);
+    const distanceToStart = Math.hypot(player.x - startPoint.x, player.y - startPoint.y);
+    const distanceToEnd = Math.hypot(player.x - endPoint.x, player.y - endPoint.y);
+    snapTarget = distanceToEnd < distanceToStart
+      ? { ...player.segment.endIntersection }
+      : { ...player.segment.startIntersection };
+  }
+
+  if (!snapTarget) {
+    snapTarget = nearestIntersection(player.x, player.y);
+  }
+
+  resetPlayerNavigation(player);
+  placePlayerAt(player, snapTarget);
+}
+
+function jumpLocalPlayerToPointerAndResetEnergy(clientX, clientY) {
+  if (!config.desktopJumpLockMode || !isDesktopPointerMode()) {
+    return false;
+  }
+
+  const localPlayer = getLocalPlayer();
+  if (!localPlayer || !localPlayer.visible) {
+    return false;
+  }
+
+  const canvasRect = canvas.getBoundingClientRect();
+  const pointerX = clientX - canvasRect.left;
+  const pointerY = clientY - canvasRect.top;
+  const pointerWorld = screenToWorldPoint({ x: pointerX, y: pointerY });
+  const nextTarget = nearestIntersection(pointerWorld.x, pointerWorld.y);
+
+  state.pointer.active = true;
+  state.pointer.x = pointerX;
+  state.pointer.y = pointerY;
+  state.pointer.targetIntersection = nextTarget;
+  state.cellStates.clear();
+  resetPlayerNavigation(localPlayer);
+  placePlayerAt(localPlayer, nextTarget);
+  localPlayer.lockedInPlace = true;
+  return true;
 }
 
 function refreshPathIfNeeded(player) {
@@ -1657,6 +1778,7 @@ function updateLocalPlayer(deltaSeconds) {
       player.spawnedAt = state.now;
       player.desiredTarget = null;
       placePlayerAt(player, randomVisibleIntersection());
+      player.lockedInPlace = !!config.desktopJumpLockMode;
 
       if (state.pointer.active) {
         refreshPointerTargetFromStoredPointer();
@@ -1666,11 +1788,98 @@ function updateLocalPlayer(deltaSeconds) {
     return;
   }
 
+  if (config.desktopJumpLockMode && !player.lockedInPlace) {
+    stopPlayerAtNearestIntersection(player);
+    player.lockedInPlace = true;
+  }
+
   if (!player.desiredTarget && state.pointer.active && playerCanFollowPointer(player)) {
     refreshPointerTargetFromStoredPointer();
   }
 
   updateDrivenPlayer(player, deltaSeconds);
+}
+
+function getPlayerNodeScreenBounds(player) {
+  if (!player || !player.visible) {
+    return null;
+  }
+
+  const spawnElapsed = player.spawnedAt == null
+    ? config.spawnFadeMs
+    : state.now - player.spawnedAt;
+  const spawnT = config.spawnFadeMs <= 0
+    ? 1
+    : clamp(spawnElapsed / config.spawnFadeMs, 0, 1);
+  const spawnScale = lerp(
+    Math.max(1, config.nodeSpawnStartScale),
+    1,
+    easeOutBack(spawnT, config.nodeSpawnBounce),
+  );
+  const timeSeconds = state.now * 0.001;
+  const pulse = 1 + Math.sin(timeSeconds * getEffectiveNodePulseSpeed()) * config.nodePulseAmplitude;
+  const visualScale = state.view.scale;
+  const width = config.nodeWidth * pulse * spawnScale * visualScale;
+  const height = config.nodeHeight * pulse * spawnScale * visualScale;
+  const screenPoint = worldToScreenPoint({ x: player.x, y: player.y });
+
+  return {
+    x: screenPoint.x - width * 0.5,
+    y: screenPoint.y - height * 0.5,
+    width,
+    height,
+  };
+}
+
+function pointInRect(x, y, rect) {
+  if (!rect) {
+    return false;
+  }
+
+  return (
+    x >= rect.x
+    && x <= rect.x + rect.width
+    && y >= rect.y
+    && y <= rect.y + rect.height
+  );
+}
+
+function toggleLocalPlayerLockFromPointer(clientX, clientY) {
+  if (!config.allowDesktopNodeLock || !isDesktopPointerMode()) {
+    return false;
+  }
+
+  const localPlayer = getLocalPlayer();
+  if (!localPlayer || !localPlayer.visible) {
+    return false;
+  }
+
+  if (localPlayer.lockedInPlace) {
+    localPlayer.lockedInPlace = false;
+    return true;
+  }
+
+  const canvasRect = canvas.getBoundingClientRect();
+  const pointerX = clientX - canvasRect.left;
+  const pointerY = clientY - canvasRect.top;
+  const nodeBounds = getPlayerNodeScreenBounds(localPlayer);
+  const hitPadding = 6;
+  const expandedBounds = nodeBounds
+    ? {
+        x: nodeBounds.x - hitPadding,
+        y: nodeBounds.y - hitPadding,
+        width: nodeBounds.width + hitPadding * 2,
+        height: nodeBounds.height + hitPadding * 2,
+      }
+    : null;
+
+  if (!pointInRect(pointerX, pointerY, expandedBounds)) {
+    return false;
+  }
+
+  stopPlayerAtNearestIntersection(localPlayer);
+  localPlayer.lockedInPlace = true;
+  return true;
 }
 
 function updateNpcPlayers(deltaSeconds) {
@@ -1713,6 +1922,55 @@ function countLockedCellStates() {
   return countLockedCellEntries(state.cellStates, state.now);
 }
 
+function clearEnergyOverlayCopyState() {
+  state.energyOverlay.bounds = null;
+  state.energyOverlay.text = '';
+}
+
+function buildEnergyOverlayLines() {
+  const playerCount = getEffectiveRoomPlayerCount();
+  const helperCount = getConfiguredNpcHelperCount();
+  const cellEnergyScale = getCellEnergyEffectScale();
+  const coopBuffScale = getCoopBuffEffectScale();
+  const effectiveChargePerSecond = getEffectiveBaseCellChargePerSecond();
+  const chargeMultiplier = getEffectiveCellChargeMultiplier();
+  const effectiveRingFalloff = getEffectiveCellChargeRingFalloff();
+  const effectiveRoundness = getEffectiveCellCornerChargeFactor();
+  const effectiveMaxRing = getEffectiveCellChargeMaxRing();
+  const effectiveDecayMs = getEffectiveCellDecayMs();
+  const effectiveLockHoldMs = getEffectiveCellLockHoldMs();
+  const lockedCells = countLockedCellStates();
+  const sourceLabel = state.network.roomId ? 'room' : 'local';
+
+  return [
+    'coop buffs',
+    `players ${playerCount} (${sourceLabel})`,
+    `local helpers ${helperCount}${config.buffOnlyHelpersEnabled ? ' (buff-only)' : ''}`,
+    `energy scale ${formatMetric(cellEnergyScale)}x`,
+    `buff scale ${formatMetric(coopBuffScale)}x`,
+    `charge base ${formatMetric(config.cellChargePerSecond)}/s`,
+    `charge bonus/player ${formatMetric(config.cellChargeBuffPerPlayer)}x`,
+    `charge live ${formatMetric(effectiveChargePerSecond * chargeMultiplier)}/s`,
+    `falloff base ${formatMetric(config.cellChargeRingFalloff)}`,
+    `falloff bonus/player ${formatMetric(config.cellRingFalloffBonusPerPlayer)}`,
+    `falloff live ${formatMetric(effectiveRingFalloff)}`,
+    `roundness base ${formatMetric(config.cellCornerChargeFactor)}`,
+    `roundness bonus/player ${formatMetric(config.cellRoundnessBonusPerPlayer)}`,
+    `roundness live ${formatMetric(effectiveRoundness)}`,
+    `radius base ${formatMetric(config.cellChargeMaxRing)}`,
+    `radius bonus/player ${formatMetric(config.cellRingCountBonusPerPlayer)}`,
+    `radius live ${formatMetric(effectiveMaxRing)}`,
+    `linked fade ${config.cellLinkedLockFade ? 'on' : 'off'}`,
+    `decay base ${formatMetric(config.cellDecayMs)}ms`,
+    `decay bonus/player ${formatMetric(config.cellDecayBonusMsPerPlayer)}ms`,
+    `decay live ${formatMetric(effectiveDecayMs)}ms`,
+    `lock base ${formatMetric(config.cellLockHoldMs)}ms`,
+    `lock bonus/player ${formatMetric(config.cellLockHoldBonusMsPerPlayer)}ms`,
+    `lock live ${formatMetric(effectiveLockHoldMs)}ms`,
+    `locked cells ${formatMetric(lockedCells)}`,
+  ];
+}
+
 function updateCellStates(deltaSeconds) {
   updateCellEnergyState({
     revealEnabled: config.revealEnabled,
@@ -1725,8 +1983,7 @@ function updateCellStates(deltaSeconds) {
     cellSize: getWorldCellSize(),
     maxRing: getEffectiveCellChargeMaxRing(),
     ringFalloff: getEffectiveCellChargeRingFalloff(),
-    ringFloorEnabled: config.cellRingFloorEnabled,
-    ringFloor: getEffectiveCellRingFloor(),
+    cornerChargeFactor: getEffectiveCellCornerChargeFactor(),
     chargePerSecond: getEffectiveBaseCellChargePerSecond() * getEffectiveCellChargeMultiplier(),
     decayMs: getEffectiveCellDecayMs(),
     lockHoldMs: getEffectiveCellLockHoldMs(),
@@ -2322,57 +2579,25 @@ function drawViewportDebug() {
 
 function drawTrailBuffOverlay() {
   if (!config.showEnergyOverlay) {
+    clearEnergyOverlayCopyState();
     return;
   }
 
-  const playerCount = getEffectiveRoomPlayerCount();
-  const helperCount = countVisibleNpcPlayers();
-  const cellEnergyScale = getCellEnergyEffectScale();
-  const coopBuffScale = getCoopBuffEffectScale();
-  const effectiveChargePerSecond = getEffectiveBaseCellChargePerSecond();
-  const chargeMultiplier = getEffectiveCellChargeMultiplier();
-  const effectiveRingFalloff = getEffectiveCellChargeRingFalloff();
-  const effectiveRingFloor = config.cellRingFloorEnabled ? getEffectiveCellRingFloor() : 0;
-  const effectiveMaxRing = getEffectiveCellChargeMaxRing();
-  const effectiveDecayMs = getEffectiveCellDecayMs();
-  const effectiveLockHoldMs = getEffectiveCellLockHoldMs();
-  const lockedCells = countLockedCellStates();
-  const sourceLabel = state.network.roomId ? 'room' : 'local';
-  const lines = [
-    'coop buffs',
-    `players ${playerCount} (${sourceLabel})`,
-    `local helpers ${helperCount}`,
-    `energy scale ${formatMetric(cellEnergyScale)}x`,
-    `buff scale ${formatMetric(coopBuffScale)}x`,
-    `charge base ${formatMetric(config.cellChargePerSecond)}/s`,
-    `charge bonus/player ${formatMetric(config.cellChargeBuffPerPlayer)}x`,
-    `charge live ${formatMetric(effectiveChargePerSecond * chargeMultiplier)}/s`,
-    `falloff base ${formatMetric(config.cellChargeRingFalloff)}`,
-    `falloff bonus/player ${formatMetric(config.cellRingFalloffBonusPerPlayer)}`,
-    `falloff live ${formatMetric(effectiveRingFalloff)}`,
-    `floor ${config.cellRingFloorEnabled ? 'on' : 'off'}`,
-    `floor base ${formatMetric(config.cellRingFloor)}`,
-    `floor bonus/player ${formatMetric(config.cellRingFloorBonusPerPlayer)}`,
-    `floor live ${formatMetric(effectiveRingFloor)}`,
-    `rings base ${formatMetric(config.cellChargeMaxRing)}`,
-    `rings bonus/player ${formatMetric(config.cellRingCountBonusPerPlayer)}`,
-    `rings live ${formatMetric(effectiveMaxRing)}`,
-    `linked fade ${config.cellLinkedLockFade ? 'on' : 'off'}`,
-    `decay base ${formatMetric(config.cellDecayMs)}ms`,
-    `decay bonus/player ${formatMetric(config.cellDecayBonusMsPerPlayer)}ms`,
-    `decay live ${formatMetric(effectiveDecayMs)}ms`,
-    `lock base ${formatMetric(config.cellLockHoldMs)}ms`,
-    `lock bonus/player ${formatMetric(config.cellLockHoldBonusMsPerPlayer)}ms`,
-    `lock live ${formatMetric(effectiveLockHoldMs)}ms`,
-    `locked cells ${formatMetric(lockedCells)}`,
-  ];
+  const lines = buildEnergyOverlayLines();
 
   const padding = 8;
   const lineHeight = 13;
-  const width = 230;
-  const height = padding * 2 + lines.length * lineHeight;
+  const footerHeight = 14;
+  const width = 244;
+  const height = padding * 2 + lines.length * lineHeight + footerHeight;
   const x = 8;
   const y = Math.max(8, viewport.height - height - 8);
+  const footerLabel = state.energyOverlay.copyFeedbackUntil > state.now
+    ? 'copied'
+    : 'click overlay to copy';
+
+  state.energyOverlay.bounds = { x, y, width, height };
+  state.energyOverlay.text = lines.join('\n');
 
   ctx.save();
   ctx.fillStyle = 'rgba(0, 0, 0, 0.78)';
@@ -2389,7 +2614,41 @@ function drawTrailBuffOverlay() {
     ctx.fillText(lines[index], x + padding, y + padding + index * lineHeight);
   }
 
+  ctx.fillStyle = footerLabel === 'copied'
+    ? 'rgba(140, 255, 184, 0.88)'
+    : 'rgba(255, 255, 255, 0.55)';
+  ctx.fillText(
+    footerLabel,
+    x + padding,
+    y + padding + lines.length * lineHeight + 2,
+  );
+
   ctx.restore();
+}
+
+function tryCopyEnergyOverlayFromPointer(clientX, clientY) {
+  if (!config.showEnergyOverlay || !state.energyOverlay.bounds || !state.energyOverlay.text) {
+    return false;
+  }
+
+  const canvasRect = canvas.getBoundingClientRect();
+  const pointerX = clientX - canvasRect.left;
+  const pointerY = clientY - canvasRect.top;
+
+  if (!pointInRect(pointerX, pointerY, state.energyOverlay.bounds)) {
+    return false;
+  }
+
+  const overlayText = state.energyOverlay.text;
+  void (async () => {
+    const copied = await copyTextToClipboard(overlayText);
+    if (!copied) {
+      window.prompt('Copy energy overlay text:', overlayText);
+    }
+    state.energyOverlay.copyFeedbackUntil = Math.max(state.now, performance.now()) + 1200;
+  })();
+
+  return true;
 }
 
 function render() {
@@ -2455,6 +2714,18 @@ canvas.addEventListener('pointermove', (event) => {
 });
 
 canvas.addEventListener('pointerdown', (event) => {
+  if (tryCopyEnergyOverlayFromPointer(event.clientX, event.clientY)) {
+    return;
+  }
+
+  if (jumpLocalPlayerToPointerAndResetEnergy(event.clientX, event.clientY)) {
+    return;
+  }
+
+  if (toggleLocalPlayerLockFromPointer(event.clientX, event.clientY)) {
+    return;
+  }
+
   updatePointerTarget(event.clientX, event.clientY);
 });
 

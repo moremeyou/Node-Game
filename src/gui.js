@@ -1,5 +1,7 @@
 import GUI from 'lil-gui';
 
+const GUI_HELP_ENABLED = false;
+
 const GUI_HELP_TEXT = {
   backgroundGradientEnabled: 'Turns the background gradient on or off behind the scene.',
   backgroundGradientTopColor: 'Top color of the scene background gradient.',
@@ -45,7 +47,8 @@ const GUI_HELP_TEXT = {
   trailGlowBlur: 'Blur radius of the trail glow.',
   trailHoldMs: 'How long a touched edge stays fully bright before its visual fade starts.',
   trailFadeMs: 'How long trail visuals take to fade out after hold time ends.',
-  npcHelperCount: 'Local-only helper nodes for testing co-op behavior. NPC helpers count toward local co-op buffs.',
+  npcHelperCount: 'How many local helper players to use for testing. With buff-only mode off they spawn as NPC nodes; with it on they only count toward local co-op buffs.',
+  buffOnlyHelpersEnabled: 'Uses the NPC Helpers count only for local co-op buff scaling without spawning extra helper nodes. Useful when you want the multiplayer look/feel tuning without other nodes moving around.',
   revealEnabled: 'Turns image reveal rendering on or off entirely.',
   revealImageSrc: 'Image path used as the hidden reveal source.',
   revealImageFitMode: 'How the reveal image is placed inside the room world before scale and offsets are applied.',
@@ -63,19 +66,18 @@ const GUI_HELP_TEXT = {
   revealTintColor: 'Tint color laid over revealed image cells.',
   revealTintOpacity: 'Opacity of the reveal tint overlay.',
   cellEnergyEffect: 'Global multiplier for the base Cell Energy settings. 1 keeps them unchanged, 0.5 weakens them, 2 strengthens them.',
-  cellChargePerSecond: 'Base image opacity added per second to the strongest cells nearest each node.',
-  cellChargeRingFalloff: 'How much weaker each outer ring is than the previous ring. Higher keeps energy spreading farther.',
-  cellRingFloorEnabled: 'When on, outer rings never drop below the configured minimum ring strength.',
-  cellRingFloor: 'Minimum multiplier for outer-ring charge once ring falloff has reduced it.',
-  cellChargeMaxRing: 'How many side-connected rings around a node receive any charge at all.',
-  cellDecayMs: 'How long an uncharged, unlocked cell takes to drain from full to empty.',
+  cellChargePerSecond: 'How strongly the spotlight pushes cells upward toward visibility each second near the node center.',
+  cellChargeRingFalloff: 'How quickly the spotlight fades with distance from the node. Lower values tighten the beam; higher values spread it farther.',
+  cellCornerChargeFactor: 'Blends the spotlight shape from squarer cell-space distance toward rounder Euclidean distance. Higher values feel more like a flashlight.',
+  cellChargeMaxRing: 'Maximum spotlight reach in cell units before charge drops to zero.',
+  cellDecayMs: 'How quickly cell opacity relaxes back down when the spotlight weakens or moves away.',
   cellLockHoldMs: 'How long a cell stays pinned at 100 after it fully charges.',
   cellLinkedLockFade: 'When on, side-connected locked cells share one release time and start fading together.',
   coopBuffEffect: 'Global multiplier for all per-player co-op bonuses. 1 keeps them unchanged, 0 disables them.',
-  cellChargeBuffPerPlayer: 'Extra per-player charge multiplier applied on top of the base charge rate.',
-  cellRingFalloffBonusPerPlayer: 'Extra per-player increase to outer-ring strength, making charge spread feel wider.',
-  cellRingFloorBonusPerPlayer: 'Extra per-player increase to the minimum outer-ring strength when ring floor is enabled.',
-  cellRingCountBonusPerPlayer: 'Extra per-player ring reach. This is discrete, so smaller scaled bonuses may not add a new ring yet.',
+  cellChargeBuffPerPlayer: 'Extra per-player brightness multiplier applied on top of the base spotlight charge.',
+  cellRingFalloffBonusPerPlayer: 'Extra per-player increase to spotlight falloff, making the beam spread wider and stay softer at the edge.',
+  cellRoundnessBonusPerPlayer: 'Extra per-player increase to spotlight roundness, making the beam less square and more flashlight-like.',
+  cellRingCountBonusPerPlayer: 'Extra per-player spotlight radius. This is discrete, so smaller scaled bonuses may not add a full extra cell yet.',
   cellDecayBonusMsPerPlayer: 'Extra per-player time before cells fully drain, making patches linger longer.',
   cellLockHoldBonusMsPerPlayer: 'Extra per-player hold time after a cell reaches 100.',
   showTarget: 'Shows the current target intersection for the local player.',
@@ -84,6 +86,8 @@ const GUI_HELP_TEXT = {
   showEnergyOverlay: 'Shows live co-op and cell-energy buff values in the lower-left overlay.',
   showPlayerIds: 'Draws each visible player id above its node.',
   showViewportDebug: 'Shows canvas and viewport metrics for layout debugging.',
+  allowDesktopNodeLock: 'Desktop-only testing aid. When enabled, clicking the local node locks it in place, and the next canvas click unlocks it.',
+  desktopJumpLockMode: 'Desktop-only spotlight test mode. The local node stays locked by default, and each canvas click clears cell energy and jumps the node directly to the clicked intersection.',
 };
 
 function setControllerEnabled(controller, enabled) {
@@ -97,23 +101,75 @@ function setControllerEnabled(controller, enabled) {
 
 export function createGuiManager({
   config,
+  baselineConfig,
   actions,
   networkInfo,
   getViewportSize,
   clamp,
   callbacks,
 }) {
+  const GUI_HELP_WATCHDOG_MS = 1400;
   let guiInstance = null;
   let guiHelpOverlay = null;
   let guiHelpActiveTarget = null;
   let guiHelpPinned = false;
+  let guiHelpWatchdogTimer = 0;
   let listenersBound = false;
   const guiControllers = {
     revealVignetteColor: null,
   };
 
+  function guiHelpEnabled() {
+    return !!(
+      GUI_HELP_ENABLED
+      && window.matchMedia
+      && window.matchMedia('(hover: hover) and (pointer: fine)').matches
+    );
+  }
+
+  function clearGuiHelpWatchdog() {
+    if (!guiHelpWatchdogTimer) {
+      return;
+    }
+
+    window.clearTimeout(guiHelpWatchdogTimer);
+    guiHelpWatchdogTimer = 0;
+  }
+
+  function targetStillNeedsGuiHelp(target) {
+    if (!target || !target.isConnected) {
+      return false;
+    }
+
+    const activeElement = document.activeElement;
+    return target.matches(':hover') || !!(activeElement && target.contains(activeElement));
+  }
+
+  function scheduleGuiHelpWatchdog() {
+    clearGuiHelpWatchdog();
+
+    if (!guiHelpEnabled() || !guiHelpActiveTarget) {
+      return;
+    }
+
+    guiHelpWatchdogTimer = window.setTimeout(() => {
+      guiHelpWatchdogTimer = 0;
+
+      if (!guiHelpActiveTarget || !guiHelpOverlay || guiHelpOverlay.style.display === 'none') {
+        return;
+      }
+
+      if (targetStillNeedsGuiHelp(guiHelpActiveTarget)) {
+        scheduleGuiHelpWatchdog();
+        return;
+      }
+
+      hideGuiHelp({ force: true });
+    }, GUI_HELP_WATCHDOG_MS);
+  }
+
   function ensureGuiHelpOverlay() {
-    if (!guiInstance) {
+    if (!guiInstance || !guiHelpEnabled()) {
       return null;
     }
 
@@ -181,7 +237,7 @@ export function createGuiManager({
   }
 
   function showGuiHelp(text, target, { pinned = false } = {}) {
-    if (!text || !target) {
+    if (!guiHelpEnabled() || !text || !target) {
       return;
     }
 
@@ -195,9 +251,12 @@ export function createGuiManager({
     guiHelpPinned = pinned;
     guiHelpOverlay.style.display = 'block';
     positionGuiHelpOverlay();
+    scheduleGuiHelpWatchdog();
   }
 
   function hideGuiHelp({ force = false } = {}) {
+    clearGuiHelpWatchdog();
+
     if (!guiHelpOverlay) {
       return;
     }
@@ -212,6 +271,10 @@ export function createGuiManager({
   }
 
   function handleGlobalGuiHelpPointerDown(event) {
+    if (!guiHelpEnabled()) {
+      return;
+    }
+
     if (!guiHelpPinned) {
       return;
     }
@@ -238,6 +301,10 @@ export function createGuiManager({
       label.title = text;
     }
 
+    if (!guiHelpEnabled()) {
+      return controller;
+    }
+
     const showHelp = () => showGuiHelp(text, target);
     const hideHelp = () => hideGuiHelp();
     const pinHelp = () => showGuiHelp(text, target, { pinned: true });
@@ -250,12 +317,69 @@ export function createGuiManager({
     return controller;
   }
 
-  function bindGuiHelpFromMap() {
+  function controllerUsesBaseline(controller) {
+    return !!(
+      baselineConfig
+      && controller
+      && controller.object === config
+      && typeof controller.property === 'string'
+      && Object.prototype.hasOwnProperty.call(baselineConfig, controller.property)
+    );
+  }
+
+  function updateControllerChangedState(controller) {
+    if (!controller || !controller.domElement) {
+      return;
+    }
+
+    const row = controller.domElement;
+    if (!controllerUsesBaseline(controller)) {
+      row.style.background = '';
+      row.style.boxShadow = '';
+      row.style.borderRadius = '';
+      row.style.transition = '';
+      return;
+    }
+
+    const changed = !Object.is(config[controller.property], baselineConfig[controller.property]);
+    row.style.borderRadius = '4px';
+    row.style.transition = 'background-color 120ms ease, box-shadow 120ms ease';
+    row.style.background = changed ? 'rgba(110, 169, 255, 0.14)' : '';
+    row.style.boxShadow = changed ? 'inset 0 0 0 1px rgba(110, 169, 255, 0.26)' : '';
+  }
+
+  function bindControllerChangedState(controller) {
+    if (!controller || !controller.domElement || !controllerUsesBaseline(controller)) {
+      return controller;
+    }
+
+    const row = controller.domElement;
+    if (row.dataset.changedStateBound === '1') {
+      updateControllerChangedState(controller);
+      return controller;
+    }
+
+    const refreshChangedState = () => {
+      window.requestAnimationFrame(() => {
+        updateControllerChangedState(controller);
+      });
+    };
+
+    row.addEventListener('input', refreshChangedState);
+    row.addEventListener('change', refreshChangedState);
+    row.addEventListener('click', refreshChangedState);
+    row.dataset.changedStateBound = '1';
+    updateControllerChangedState(controller);
+    return controller;
+  }
+
+  function bindControllerUiState() {
     if (!guiInstance || typeof guiInstance.controllersRecursive !== 'function') {
       return;
     }
 
     for (const controller of guiInstance.controllersRecursive()) {
+      bindControllerChangedState(controller);
       const key = controller && typeof controller.property === 'string'
         ? controller.property
         : null;
@@ -269,7 +393,7 @@ export function createGuiManager({
   }
 
   function bindGlobalListeners() {
-    if (listenersBound) {
+    if (listenersBound || !guiHelpEnabled()) {
       return;
     }
 
@@ -291,6 +415,7 @@ export function createGuiManager({
 
     for (const controller of guiInstance.controllersRecursive()) {
       controller.updateDisplay();
+      updateControllerChangedState(controller);
     }
   }
 
@@ -327,16 +452,9 @@ export function createGuiManager({
     const gui = new GUI({ title: 'Nodegame Controls' });
     guiInstance = gui;
     bindGlobalListeners();
-    ensureGuiHelpOverlay();
-
-    const backgroundFolder = gui.addFolder('Background');
-    backgroundFolder.add(config, 'backgroundGradientEnabled').name('Enabled');
-    backgroundFolder.addColor(config, 'backgroundGradientTopColor').name('Top Color');
-    backgroundFolder.addColor(config, 'backgroundGradientBottomColor').name('Bottom Color');
-    backgroundFolder.add(config, 'backgroundGradientTopAlpha', 0, 1, 0.01).name('Top Alpha');
-    backgroundFolder.add(config, 'backgroundGradientBottomAlpha', 0, 1, 0.01).name('Bottom Alpha');
-    backgroundFolder.addColor(config, 'flatBackgroundColor').name('Flat Color');
-    backgroundFolder.close();
+    if (guiHelpEnabled()) {
+      ensureGuiHelpOverlay();
+    }
 
     const roomWorldFolder = gui.addFolder('Room World');
     roomWorldFolder.add(config, 'gridSize', 40, 200, 1)
@@ -351,6 +469,15 @@ export function createGuiManager({
       });
     roomWorldFolder.close();
 
+    const backgroundFolder = gui.addFolder('Background');
+    backgroundFolder.add(config, 'backgroundGradientEnabled').name('Enabled');
+    backgroundFolder.addColor(config, 'backgroundGradientTopColor').name('Top Color');
+    backgroundFolder.addColor(config, 'backgroundGradientBottomColor').name('Bottom Color');
+    backgroundFolder.add(config, 'backgroundGradientTopAlpha', 0, 1, 0.01).name('Top Alpha');
+    backgroundFolder.add(config, 'backgroundGradientBottomAlpha', 0, 1, 0.01).name('Bottom Alpha');
+    backgroundFolder.addColor(config, 'flatBackgroundColor').name('Flat Color');
+    backgroundFolder.close();
+
     const gridAestheticFolder = gui.addFolder('Grid Aesthetic');
     gridAestheticFolder.addColor(config, 'gridColor').name('Grid Color');
     gridAestheticFolder.add(config, 'gridOpacity', 0, 1, 0.01).name('Grid Opacity');
@@ -361,79 +488,6 @@ export function createGuiManager({
       GUI_HELP_TEXT.showGridIntersections,
     );
     gridAestheticFolder.close();
-
-    const nodeBehaviorFolder = gui.addFolder('Node Behavior');
-    nodeBehaviorFolder.add(config, 'spawnDelayMs', 0, 3000, 10).name('Spawn Delay');
-    nodeBehaviorFolder.add(config, 'spawnFadeMs', 0, 2000, 10).name('Spawn Fade');
-    nodeBehaviorFolder.add(config, 'followPointerDelayMs', 0, 3000, 10).name('Follow Delay');
-    nodeBehaviorFolder.add(config, 'moveSpeed', 60, 1200, 1).name('Speed');
-    nodeBehaviorFolder.add(config, 'routePreference', ['horizontal-first', 'vertical-first', 'alternating']).name('Routing');
-    nodeBehaviorFolder.add(config, 'turnPauseMs', 0, 500, 5).name('Turn Pause');
-    nodeBehaviorFolder.add(config, 'segmentEasing', 0, 1, 0.01).name('Smoothing');
-    nodeBehaviorFolder.close();
-
-    const nodeFolder = gui.addFolder('Node');
-    nodeFolder.addColor(config, 'nodeColor').name('Fill');
-    nodeFolder.addColor(config, 'nodeBorderColor').name('Border');
-    nodeFolder.add(config, 'nodeBorderOpacity', 0, 1, 0.01).name('Border Alpha');
-    nodeFolder.add(config, 'nodeBorderWidth', 0, 4, 0.5).name('Border Width');
-    nodeFolder.addColor(config, 'nodeGlowColor').name('Glow');
-    nodeFolder.add(config, 'nodeGlowOpacity', 0, 1, 0.01).name('Glow Alpha');
-    nodeFolder.add(config, 'nodeGlowBlur', 0, 60, 1).name('Glow Blur');
-    nodeFolder.add(config, 'nodeWidth', 6, 64, 1).name('Width');
-    nodeFolder.add(config, 'nodeHeight', 6, 48, 1).name('Height');
-    nodeFolder.add(config, 'nodeRadius', 0, 24, 1).name('Corner Radius');
-    nodeFolder.add(config, 'nodePulseAmplitude', 0, 0.3, 0.005).name('Pulse Amount');
-    nodeFolder.add(config, 'pulseSpeed', 0, 12, 0.05).name('Pulse Speed');
-    nodeFolder.add(config, 'nodeSpawnStartScale', 1, 16, 0.1).name('Spawn Start Scale');
-    nodeFolder.add(config, 'nodeSpawnBounce', 0, 3, 0.05).name('Spawn Bounce');
-    nodeFolder.close();
-
-    const trailFolder = gui.addFolder('Trail Visuals');
-    trailFolder.add(config, 'trailEnabled').name('Enabled');
-    trailFolder.addColor(config, 'trailColor').name('Line');
-    trailFolder.add(config, 'trailOpacity', 0, 1, 0.01).name('Line Alpha');
-    trailFolder.addColor(config, 'trailGlowColor').name('Glow');
-    trailFolder.add(config, 'trailGlowOpacity', 0, 1, 0.01).name('Glow Alpha');
-    trailFolder.add(config, 'trailLineWidth', 1, 12, 0.1).name('Line Width');
-    trailFolder.add(config, 'trailGlowWidth', 0, 28, 0.5).name('Glow Spread');
-    trailFolder.add(config, 'trailLineCap', ['round', 'butt', 'square']).name('Cap Style');
-    trailFolder.add(config, 'trailGlowBlur', 0, 60, 1).name('Glow Blur');
-    trailFolder.add(config, 'trailHoldMs', 0, 4000, 10).name('Hold Time');
-    trailFolder.add(config, 'trailFadeMs', 50, 6000, 10).name('Fade Time');
-    trailFolder.add(actions, 'clearActiveEdges').name('Clear Trails');
-    trailFolder.close();
-
-    const buffsFolder = gui.addFolder('Co-op Buffs');
-    attachGuiHelp(
-      buffsFolder.add(config, 'coopBuffEffect', 0, 3, 0.05).name('Co-op Buff Effect'),
-      GUI_HELP_TEXT.coopBuffEffect,
-    );
-    attachGuiHelp(
-      buffsFolder.add(config, 'cellChargeBuffPerPlayer', 0, 2, 0.05).name('Charge Bonus / Player'),
-      GUI_HELP_TEXT.cellChargeBuffPerPlayer,
-    );
-    attachGuiHelp(
-      buffsFolder.add(config, 'cellRingFalloffBonusPerPlayer', 0, 0.5, 0.05).name('Falloff Bonus / Player'),
-      GUI_HELP_TEXT.cellRingFalloffBonusPerPlayer,
-    );
-    attachGuiHelp(
-      buffsFolder.add(config, 'cellRingFloorBonusPerPlayer', 0, 0.5, 0.05).name('Floor Bonus / Player'),
-      GUI_HELP_TEXT.cellRingFloorBonusPerPlayer,
-    );
-    attachGuiHelp(
-      buffsFolder.add(config, 'cellRingCountBonusPerPlayer', 0, 4, 0.25).name('Ring Bonus / Player'),
-      GUI_HELP_TEXT.cellRingCountBonusPerPlayer,
-    );
-    attachGuiHelp(
-      buffsFolder.add(config, 'cellDecayBonusMsPerPlayer', 0, 4000, 50).name('Decay Bonus / Player'),
-      GUI_HELP_TEXT.cellDecayBonusMsPerPlayer,
-    );
-    attachGuiHelp(
-      buffsFolder.add(config, 'cellLockHoldBonusMsPerPlayer', 0, 4000, 50).name('Lock Hold Bonus / Player'),
-      GUI_HELP_TEXT.cellLockHoldBonusMsPerPlayer,
-    );
-    buffsFolder.open();
 
     const revealFolder = gui.addFolder('Reveal Image');
     revealFolder.add(config, 'revealEnabled').name('Enabled');
@@ -502,6 +556,48 @@ export function createGuiManager({
     revealFolder.add(actions, 'reloadRevealImage').name('Reload Reveal Image');
     revealFolder.close();
 
+    const nodeFolder = gui.addFolder('Node');
+    nodeFolder.addColor(config, 'nodeColor').name('Fill');
+    nodeFolder.addColor(config, 'nodeBorderColor').name('Border');
+    nodeFolder.add(config, 'nodeBorderOpacity', 0, 1, 0.01).name('Border Alpha');
+    nodeFolder.add(config, 'nodeBorderWidth', 0, 4, 0.5).name('Border Width');
+    nodeFolder.addColor(config, 'nodeGlowColor').name('Glow');
+    nodeFolder.add(config, 'nodeGlowOpacity', 0, 1, 0.01).name('Glow Alpha');
+    nodeFolder.add(config, 'nodeGlowBlur', 0, 60, 1).name('Glow Blur');
+    nodeFolder.add(config, 'nodeWidth', 6, 64, 1).name('Width');
+    nodeFolder.add(config, 'nodeHeight', 6, 48, 1).name('Height');
+    nodeFolder.add(config, 'nodeRadius', 0, 24, 1).name('Corner Radius');
+    nodeFolder.add(config, 'nodePulseAmplitude', 0, 0.3, 0.005).name('Pulse Amount');
+    nodeFolder.add(config, 'pulseSpeed', 0, 12, 0.05).name('Pulse Speed');
+    nodeFolder.add(config, 'nodeSpawnStartScale', 1, 16, 0.1).name('Spawn Start Scale');
+    nodeFolder.add(config, 'nodeSpawnBounce', 0, 3, 0.05).name('Spawn Bounce');
+    nodeFolder.close();
+
+    const nodeBehaviorFolder = gui.addFolder('Node Behavior');
+    nodeBehaviorFolder.add(config, 'spawnDelayMs', 0, 3000, 10).name('Spawn Delay');
+    nodeBehaviorFolder.add(config, 'spawnFadeMs', 0, 2000, 10).name('Spawn Fade');
+    nodeBehaviorFolder.add(config, 'followPointerDelayMs', 0, 3000, 10).name('Follow Delay');
+    nodeBehaviorFolder.add(config, 'moveSpeed', 60, 1200, 1).name('Speed');
+    nodeBehaviorFolder.add(config, 'routePreference', ['horizontal-first', 'vertical-first', 'alternating']).name('Routing');
+    nodeBehaviorFolder.add(config, 'turnPauseMs', 0, 500, 5).name('Turn Pause');
+    nodeBehaviorFolder.add(config, 'segmentEasing', 0, 1, 0.01).name('Smoothing');
+    nodeBehaviorFolder.close();
+
+    const trailFolder = gui.addFolder('Trail Visuals');
+    trailFolder.add(config, 'trailEnabled').name('Enabled');
+    trailFolder.addColor(config, 'trailColor').name('Line');
+    trailFolder.add(config, 'trailOpacity', 0, 1, 0.01).name('Line Alpha');
+    trailFolder.addColor(config, 'trailGlowColor').name('Glow');
+    trailFolder.add(config, 'trailGlowOpacity', 0, 1, 0.01).name('Glow Alpha');
+    trailFolder.add(config, 'trailLineWidth', 1, 12, 0.1).name('Line Width');
+    trailFolder.add(config, 'trailGlowWidth', 0, 28, 0.5).name('Glow Spread');
+    trailFolder.add(config, 'trailLineCap', ['round', 'butt', 'square']).name('Cap Style');
+    trailFolder.add(config, 'trailGlowBlur', 0, 60, 1).name('Glow Blur');
+    trailFolder.add(config, 'trailHoldMs', 0, 4000, 10).name('Hold Time');
+    trailFolder.add(config, 'trailFadeMs', 50, 6000, 10).name('Fade Time');
+    trailFolder.add(actions, 'clearActiveEdges').name('Clear Trails');
+    trailFolder.close();
+
     const cellEnergyFolder = gui.addFolder('Cell Energy');
     attachGuiHelp(
       cellEnergyFolder.add(config, 'cellEnergyEffect', 0, 3, 0.05).name('Cell Energy Effect'),
@@ -512,19 +608,15 @@ export function createGuiManager({
       GUI_HELP_TEXT.cellChargePerSecond,
     );
     attachGuiHelp(
-      cellEnergyFolder.add(config, 'cellChargeRingFalloff', 0, 1, 0.05).name('Ring Falloff'),
+      cellEnergyFolder.add(config, 'cellChargeRingFalloff', 0, 1, 0.05).name('Falloff'),
       GUI_HELP_TEXT.cellChargeRingFalloff,
     );
     attachGuiHelp(
-      cellEnergyFolder.add(config, 'cellRingFloorEnabled').name('Ring Floor Enabled'),
-      GUI_HELP_TEXT.cellRingFloorEnabled,
+      cellEnergyFolder.add(config, 'cellCornerChargeFactor', 0, 1, 0.05).name('Roundness'),
+      GUI_HELP_TEXT.cellCornerChargeFactor,
     );
     attachGuiHelp(
-      cellEnergyFolder.add(config, 'cellRingFloor', 0, 1, 0.05).name('Ring Floor'),
-      GUI_HELP_TEXT.cellRingFloor,
-    );
-    attachGuiHelp(
-      cellEnergyFolder.add(config, 'cellChargeMaxRing', 0, 6, 1).name('Ring Count'),
+      cellEnergyFolder.add(config, 'cellChargeMaxRing', 0, 6, 0.25).name('Radius'),
       GUI_HELP_TEXT.cellChargeMaxRing,
     );
     attachGuiHelp(
@@ -541,6 +633,52 @@ export function createGuiManager({
     );
     cellEnergyFolder.add(actions, 'clearCellStates').name('Clear Cell Energy');
     cellEnergyFolder.open();
+
+    const buffsFolder = gui.addFolder('Co-op Buffs');
+    attachGuiHelp(
+      buffsFolder.add(config, 'coopBuffEffect', 0, 3, 0.05).name('Co-op Buff Effect'),
+      GUI_HELP_TEXT.coopBuffEffect,
+    );
+    attachGuiHelp(
+      buffsFolder.add(config, 'cellChargeBuffPerPlayer', 0, 2, 0.05).name('Charge Bonus / Player'),
+      GUI_HELP_TEXT.cellChargeBuffPerPlayer,
+    );
+    attachGuiHelp(
+      buffsFolder.add(config, 'cellRingFalloffBonusPerPlayer', 0, 0.5, 0.05).name('Falloff Bonus / Player'),
+      GUI_HELP_TEXT.cellRingFalloffBonusPerPlayer,
+    );
+    attachGuiHelp(
+      buffsFolder.add(config, 'cellRoundnessBonusPerPlayer', 0, 0.5, 0.05).name('Roundness Bonus / Player'),
+      GUI_HELP_TEXT.cellRoundnessBonusPerPlayer,
+    );
+    attachGuiHelp(
+      buffsFolder.add(config, 'cellRingCountBonusPerPlayer', 0, 4, 0.25).name('Radius Bonus / Player'),
+      GUI_HELP_TEXT.cellRingCountBonusPerPlayer,
+    );
+    attachGuiHelp(
+      buffsFolder.add(config, 'cellDecayBonusMsPerPlayer', 0, 4000, 50).name('Decay Bonus / Player'),
+      GUI_HELP_TEXT.cellDecayBonusMsPerPlayer,
+    );
+    attachGuiHelp(
+      buffsFolder.add(config, 'cellLockHoldBonusMsPerPlayer', 0, 4000, 50).name('Lock Hold Bonus / Player'),
+      GUI_HELP_TEXT.cellLockHoldBonusMsPerPlayer,
+    );
+    buffsFolder.open();
+
+    updateRevealVignetteState();
+
+    const networkFolder = gui.addFolder('Networking');
+    networkFolder.add(config, 'networkUrl').name('WS URL').onFinishChange(() => {
+      callbacks.connectNetwork({ force: true });
+    });
+    networkFolder.add(config, 'networkSendIntervalMs', 20, 250, 5).name('Send Interval');
+    networkFolder.add(config, 'networkReconnectDelayMs', 250, 5000, 50).name('Reconnect Delay');
+    networkFolder.add(networkInfo, 'status').name('Status').listen();
+    networkFolder.add(networkInfo, 'roomId').name('Room').listen();
+    networkFolder.add(networkInfo, 'players').name('Players').listen();
+    networkFolder.add(networkInfo, 'shareUrl').name('Browser URL').listen();
+    networkFolder.add(actions, 'resetServer').name('Reset Server');
+    networkFolder.close();
 
     const debugFolder = gui.addFolder('Debug');
     attachGuiHelp(debugFolder.add(config, 'showTarget').name('Target'), GUI_HELP_TEXT.showTarget);
@@ -560,33 +698,33 @@ export function createGuiManager({
       debugFolder.add(config, 'showViewportDebug').name('Viewport Metrics'),
       GUI_HELP_TEXT.showViewportDebug,
     );
+    attachGuiHelp(
+      debugFolder.add(config, 'allowDesktopNodeLock').name('Desktop Node Lock'),
+      GUI_HELP_TEXT.allowDesktopNodeLock,
+    );
+    attachGuiHelp(
+      debugFolder.add(config, 'desktopJumpLockMode').name('Locked Jump Mode'),
+      GUI_HELP_TEXT.desktopJumpLockMode,
+    );
     debugFolder.open();
-
-    updateRevealVignetteState();
-
-    const networkFolder = gui.addFolder('Networking');
-    networkFolder.add(config, 'networkUrl').name('WS URL').onFinishChange(() => {
-      callbacks.connectNetwork({ force: true });
-    });
-    networkFolder.add(config, 'networkSendIntervalMs', 20, 250, 5).name('Send Interval');
-    networkFolder.add(config, 'networkReconnectDelayMs', 250, 5000, 50).name('Reconnect Delay');
-    networkFolder.add(networkInfo, 'status').name('Status').listen();
-    networkFolder.add(networkInfo, 'roomId').name('Room').listen();
-    networkFolder.add(networkInfo, 'players').name('Players').listen();
-    networkFolder.add(networkInfo, 'shareUrl').name('Browser URL').listen();
-    networkFolder.add(actions, 'resetServer').name('Reset Server');
-    networkFolder.close();
 
     const devToolsFolder = gui.addFolder('Dev Tools');
     attachGuiHelp(
       devToolsFolder.add(config, 'npcHelperCount', 0, 5, 1).name('NPC Helpers'),
       GUI_HELP_TEXT.npcHelperCount,
     );
+    attachGuiHelp(
+      devToolsFolder.add(config, 'buffOnlyHelpersEnabled').name('Buff-Only Helpers'),
+      GUI_HELP_TEXT.buffOnlyHelpersEnabled,
+    );
+    devToolsFolder.add(actions, 'resetDefaultConfig').name('Reset Config');
+    devToolsFolder.add(actions, 'copyChangedConfig').name('Copy Changed Config');
     devToolsFolder.add(actions, 'copyConfig').name('Copy Full Config');
     devToolsFolder.add(actions, 'pasteConfig').name('Paste Full Config');
-    devToolsFolder.close();
+    devToolsFolder.open();
 
-    bindGuiHelpFromMap();
+    bindControllerUiState();
+    refreshDisplay();
     applyLayout();
     return gui;
   }

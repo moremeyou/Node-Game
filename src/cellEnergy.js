@@ -2,18 +2,23 @@ function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
 }
 
-function pointToRectDistance(x, y, rect) {
-  const dx = x < rect.x
-    ? rect.x - x
-    : x > rect.x + rect.width
-      ? x - (rect.x + rect.width)
-      : 0;
-  const dy = y < rect.y
-    ? rect.y - y
-    : y > rect.y + rect.height
-      ? y - (rect.y + rect.height)
-      : 0;
-  return Math.hypot(dx, dy);
+function lerp(a, b, t) {
+  return a + (b - a) * t;
+}
+
+function pointToRectAxisDistance(x, y, rect) {
+  return {
+    x: x < rect.x
+      ? rect.x - x
+      : x > rect.x + rect.width
+        ? x - (rect.x + rect.width)
+        : 0,
+    y: y < rect.y
+      ? rect.y - y
+      : y > rect.y + rect.height
+        ? y - (rect.y + rect.height)
+        : 0,
+  };
 }
 
 function buildCellChargeRateMap({
@@ -23,8 +28,7 @@ function buildCellChargeRateMap({
   cellSize,
   maxRing,
   ringFalloff,
-  ringFloorEnabled,
-  ringFloor,
+  cornerChargeFactor,
   chargePerSecond,
   getCellRect,
   createCellKey,
@@ -34,28 +38,35 @@ function buildCellChargeRateMap({
     return chargeRates;
   }
 
-  const effectiveRingFloor = ringFloorEnabled ? Math.max(0, ringFloor) : 0;
+  const roundness = clamp(cornerChargeFactor, 0, 1);
 
   for (const player of renderablePlayers) {
-    const minCol = clamp(Math.floor(player.x / cellSize) - maxRing - 1, 0, cols - 1);
-    const maxCol = clamp(Math.floor(player.x / cellSize) + maxRing + 1, 0, cols - 1);
-    const minRow = clamp(Math.floor(player.y / cellSize) - maxRing - 1, 0, rows - 1);
-    const maxRow = clamp(Math.floor(player.y / cellSize) + maxRing + 1, 0, rows - 1);
+    const centerCol = Math.floor(player.x / cellSize);
+    const centerRow = Math.floor(player.y / cellSize);
+    const searchRadius = Math.max(0, Math.ceil(maxRing + 1));
+    const minCol = clamp(centerCol - searchRadius, 0, cols - 1);
+    const maxCol = clamp(centerCol + searchRadius, 0, cols - 1);
+    const minRow = clamp(centerRow - searchRadius, 0, rows - 1);
+    const maxRow = clamp(centerRow + searchRadius, 0, rows - 1);
 
     for (let col = minCol; col <= maxCol; col += 1) {
       for (let row = minRow; row <= maxRow; row += 1) {
         const cell = { col, row };
         const rect = getCellRect(cell);
-        const distanceCells = pointToRectDistance(player.x, player.y, rect) / cellSize;
-        const ringIndex = distanceCells <= 0.001 ? 0 : Math.ceil(distanceCells - 0.001);
+        const axisDistance = pointToRectAxisDistance(player.x, player.y, rect);
+        const xDistanceCells = axisDistance.x / cellSize;
+        const yDistanceCells = axisDistance.y / cellSize;
+        const squareDistanceCells = Math.max(xDistanceCells, yDistanceCells);
+        const roundDistanceCells = Math.hypot(xDistanceCells, yDistanceCells);
+        const distanceCells = lerp(squareDistanceCells, roundDistanceCells, roundness);
 
-        if (ringIndex > maxRing) {
+        if (distanceCells > maxRing + 0.001) {
           continue;
         }
 
-        const weight = ringIndex === 0
+        const weight = distanceCells <= 0.001
           ? 1
-          : Math.max(Math.pow(ringFalloff, ringIndex), effectiveRingFloor);
+          : Math.pow(ringFalloff, distanceCells);
         if (weight <= 0) {
           continue;
         }
@@ -161,8 +172,7 @@ export function updateCellEnergyState({
   cellSize,
   maxRing,
   ringFalloff,
-  ringFloorEnabled,
-  ringFloor,
+  cornerChargeFactor,
   chargePerSecond,
   decayMs,
   lockHoldMs,
@@ -186,8 +196,7 @@ export function updateCellEnergyState({
     cellSize,
     maxRing,
     ringFalloff,
-    ringFloorEnabled,
-    ringFloor,
+    cornerChargeFactor,
     chargePerSecond,
     getCellRect,
     createCellKey,
@@ -202,6 +211,11 @@ export function updateCellEnergyState({
 
   for (const key of keys) {
     const chargeRate = Math.max(0, chargeRates.get(key) || 0);
+    const targetAlpha = chargeRate <= 0
+      ? 0
+      : !Number.isFinite(decayPerSecond) || decayPerSecond <= 0
+        ? 1
+        : clamp(chargeRate / decayPerSecond, 0, 1);
     let entry = cellStates.get(key);
 
     if (!entry) {
@@ -224,8 +238,16 @@ export function updateCellEnergyState({
     }
 
     entry.lockedUntil = 0;
-    const decayAmount = Number.isFinite(decayPerSecond) ? decayPerSecond * deltaSeconds : 1;
-    const nextAlpha = clamp(entry.alpha + chargeRate * deltaSeconds - decayAmount, 0, 1);
+    let nextAlpha = entry.alpha;
+
+    if (targetAlpha > entry.alpha) {
+      nextAlpha = Math.min(targetAlpha, entry.alpha + chargeRate * deltaSeconds);
+    } else if (targetAlpha < entry.alpha) {
+      const decayAmount = Number.isFinite(decayPerSecond) ? decayPerSecond * deltaSeconds : entry.alpha;
+      nextAlpha = Math.max(targetAlpha, entry.alpha - decayAmount);
+    }
+
+    nextAlpha = clamp(nextAlpha, 0, 1);
 
     entry.alpha = nextAlpha;
 
